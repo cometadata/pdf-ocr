@@ -211,6 +211,7 @@ def test_push_batch_to_hub_uploads_shard():
     assert call_kwargs["path_in_repo"] == "data/shard_00000.parquet"
     assert call_kwargs["repo_id"] == "user/results"
     assert call_kwargs["repo_type"] == "dataset"
+    assert isinstance(call_kwargs["path_or_fileobj"], str)
 
 
 def test_push_batch_to_hub_shard_numbering():

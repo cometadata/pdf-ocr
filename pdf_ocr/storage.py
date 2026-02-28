@@ -117,7 +117,7 @@ def push_batch_to_hub(
     private: bool = False,
 ) -> None:
     """Upload a batch as a numbered parquet shard to HF Hub."""
-    import io
+    import tempfile
     import pyarrow as pa
     import pyarrow.parquet as pq
     from huggingface_hub import HfApi
@@ -133,21 +133,20 @@ def push_batch_to_hub(
     ]
 
     table = pa.Table.from_pylist(rows)
-    buf = io.BytesIO()
-    pq.write_table(table, buf)
-    buf.seek(0)
 
+    shard_name = f"data/shard_{shard_index:05d}.parquet"
     api = HfApi(token=token)
     api.create_repo(repo_id, repo_type="dataset", private=private, exist_ok=True)
 
-    shard_name = f"data/shard_{shard_index:05d}.parquet"
-    api.upload_file(
-        path_or_fileobj=buf,
-        path_in_repo=shard_name,
-        repo_id=repo_id,
-        repo_type="dataset",
-        commit_message=f"Add shard {shard_index:05d}",
-    )
+    with tempfile.NamedTemporaryFile(suffix=".parquet", delete=True) as tmp:
+        pq.write_table(table, tmp.name)
+        api.upload_file(
+            path_or_fileobj=tmp.name,
+            path_in_repo=shard_name,
+            repo_id=repo_id,
+            repo_type="dataset",
+            commit_message=f"Add shard {shard_index:05d}",
+        )
     LOGGER.info("Pushed shard %s (%d rows) to %s", shard_name, len(rows), repo_id)
 
 
