@@ -105,8 +105,8 @@ class TestBuildEngineKwargs:
             "mm-processor-cache-gb": 4,
             "enable-chunked-prefill": True,
             "max-model-len": 4096,
-            "max-num-batched-tokens": 32768,
-            "gpu-memory-utilization": 0.95,
+            "max-num-batched-tokens": 16384,
+            "gpu-memory-utilization": 0.90,
             "trust-remote-code": True,
         })
         kwargs = build_engine_kwargs(config)
@@ -115,8 +115,8 @@ class TestBuildEngineKwargs:
         assert kwargs["mm_processor_cache_gb"] == 4
         assert kwargs["enable_chunked_prefill"] is True
         assert kwargs["max_model_len"] == 4096
-        assert kwargs["max_num_batched_tokens"] == 32768
-        assert kwargs["gpu_memory_utilization"] == 0.95
+        assert kwargs["max_num_batched_tokens"] == 16384
+        assert kwargs["gpu_memory_utilization"] == 0.90
         assert kwargs["trust_remote_code"] is True
         # prefix caching no longer explicitly disabled
         assert "enable_prefix_caching" not in kwargs
