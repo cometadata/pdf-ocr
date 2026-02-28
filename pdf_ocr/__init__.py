@@ -26,7 +26,6 @@ def convert(
     host: str = "0.0.0.0",
 ) -> List[ConversionResult]:
     from .config import load_config
-    from .convert import convert_pages
     from .pdf_input import load_pdfs
 
     config = load_config(model)
@@ -36,7 +35,7 @@ def convert(
     if batch_size is not None:
         effective_batch_size = batch_size
     elif effective_backend == "offline":
-        effective_batch_size = 512
+        effective_batch_size = config.inference.offline_batch_size
     else:
         effective_batch_size = config.inference.batch_size
     hf_token = token or os.environ.get("HF_TOKEN")
@@ -68,30 +67,59 @@ def convert(
         client = VLLMClient(base_url=base_url, config=config)
 
     try:
+        from .convert import convert_pages_streaming, _group_by_document
+
         pages = load_pdfs(source, config, pdf_column=pdf_column, split=split, token=hf_token)
-        results = convert_pages(
+
+        all_results = []
+        batch_count = 0
+        flush_every = config.inference.flush_every
+        hub_shard_index = 0
+        pending_hub_rows = []
+
+        for batch_results in convert_pages_streaming(
             pages,
             client,
             batch_size=effective_batch_size,
             max_pages=max_pages,
+            max_retry_depth=config.inference.max_retry_depth,
             checkpoint_dir=checkpoint_dir,
             resume_from_checkpoint=checkpoint_dir is not None,
-        )
+        ):
+            all_results.extend(batch_results)
+            batch_count += 1
+
+            if output and is_local_output:
+                from .storage import save_batch_incremental
+                save_batch_incremental(batch_results, Path(output))
+            elif output and not is_local_output:
+                pending_hub_rows.extend(batch_results)
+                if batch_count % flush_every == 0 and pending_hub_rows:
+                    from .storage import push_batch_to_hub
+                    push_batch_to_hub(
+                        pending_hub_rows, repo_id=output,
+                        shard_index=hub_shard_index,
+                        token=hf_token, private=private,
+                    )
+                    hub_shard_index += 1
+                    pending_hub_rows = []
+
+        # Flush remaining hub rows
+        if output and not is_local_output and pending_hub_rows:
+            from .storage import push_batch_to_hub
+            push_batch_to_hub(
+                pending_hub_rows, repo_id=output,
+                shard_index=hub_shard_index,
+                token=hf_token, private=private,
+            )
+
     finally:
         if server_process is not None:
             from .server import shutdown_server
             shutdown_server(server_process)
 
-    if output:
-        if not is_local_output:
-            from .storage import push_to_hub
-            push_to_hub(results, repo_id=output, private=private, token=hf_token)
-        else:
-            from .storage import save_local
-            save_local(results, output)
-
     if checkpoint_dir is not None:
         from .storage import clear_checkpoints
         clear_checkpoints(checkpoint_dir)
 
-    return results
+    return _group_by_document(all_results)

@@ -108,3 +108,18 @@ def test_backend_with_overrides():
     config = load_config("lighton_ocr_2_1b")
     config = config.with_overrides(backend="offline")
     assert config.backend == "offline"
+
+
+def test_new_inference_fields_defaults():
+    config = load_config("lighton_ocr_2_1b")
+    assert config.inference.offline_batch_size == 32
+    assert config.inference.max_encode_workers == 8
+    assert config.inference.max_retry_depth == 3
+    assert config.inference.flush_every == 10
+
+
+def test_new_inference_fields_with_overrides():
+    config = load_config("lighton_ocr_2_1b")
+    config = config.with_overrides(offline_batch_size=64, max_encode_workers=16)
+    assert config.inference.offline_batch_size == 64
+    assert config.inference.max_encode_workers == 16

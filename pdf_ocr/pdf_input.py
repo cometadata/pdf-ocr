@@ -44,32 +44,30 @@ def render_page(page, cfg: PdfRenderingConfig) -> Image.Image:
     return image
 
 
-def render_pdf(source: str | Path, cfg: PdfRenderingConfig, doc_id: Optional[str] = None) -> List[PageImage]:
-    """Render all pages from a PDF file."""
+def render_pdf(source: str | Path, cfg: PdfRenderingConfig, doc_id: Optional[str] = None) -> Iterator[PageImage]:
+    """Render pages from a PDF file lazily, yielding one at a time."""
     t0 = time.monotonic()
     path = Path(source)
     if doc_id is None:
         doc_id = path.stem
 
     pdf = pdfium.PdfDocument(str(path))
-    pages = []
-    for i in range(len(pdf)):
+    n_pages = len(pdf)
+    for i in range(n_pages):
         image = render_page(pdf[i], cfg)
-        pages.append(PageImage(doc_id=doc_id, source=str(path), page_index=i, image=image))
-    LOGGER.info("Rendered %d pages from %s in %.2fs", len(pages), doc_id, time.monotonic() - t0)
-    return pages
+        yield PageImage(doc_id=doc_id, source=str(path), page_index=i, image=image)
+    LOGGER.info("Rendered %d pages from %s in %.2fs", n_pages, doc_id, time.monotonic() - t0)
 
 
-def render_pdf_bytes(data: bytes, cfg: PdfRenderingConfig, doc_id: str, source: str = "") -> List[PageImage]:
-    """Render all pages from PDF bytes."""
+def render_pdf_bytes(data: bytes, cfg: PdfRenderingConfig, doc_id: str, source: str = "") -> Iterator[PageImage]:
+    """Render pages from PDF bytes lazily, yielding one at a time."""
     t0 = time.monotonic()
     pdf = pdfium.PdfDocument(data)
-    pages = []
-    for i in range(len(pdf)):
+    n_pages = len(pdf)
+    for i in range(n_pages):
         image = render_page(pdf[i], cfg)
-        pages.append(PageImage(doc_id=doc_id, source=source or doc_id, page_index=i, image=image))
-    LOGGER.info("Rendered %d pages from %s in %.2fs", len(pages), doc_id, time.monotonic() - t0)
-    return pages
+        yield PageImage(doc_id=doc_id, source=source or doc_id, page_index=i, image=image)
+    LOGGER.info("Rendered %d pages from %s in %.2fs", n_pages, doc_id, time.monotonic() - t0)
 
 
 def detect_input_type(source: str) -> InputType:

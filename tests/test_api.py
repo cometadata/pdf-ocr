@@ -15,18 +15,17 @@ def test_convert_single_pdf(tmp_path):
                   image=Image.new("RGB", (100, 100))),
     ]
 
-    with patch("pdf_ocr.convert.convert_pages") as mock_convert, \
+    from pdf_ocr.convert import PageResult
+
+    def fake_streaming(*args, **kwargs):
+        yield [("test", str(fake_pdf), PageResult(page_index=0, markdown="# Hello"))]
+
+    with patch("pdf_ocr.convert.convert_pages_streaming", side_effect=fake_streaming), \
          patch("pdf_ocr.pdf_input.load_pdfs", return_value=iter(fake_pages)), \
          patch("pdf_ocr.server.launch_vllm") as mock_launch, \
          patch("pdf_ocr.server.wait_for_server", return_value=True), \
          patch("pdf_ocr.server.shutdown_server"), \
          patch("pdf_ocr.server.VLLMClient") as MockClient:
-
-        from pdf_ocr.convert import ConversionResult, PageResult
-        mock_convert.return_value = [
-            ConversionResult(doc_id="test", source=str(fake_pdf),
-                             pages=[PageResult(page_index=0, markdown="# Hello")])
-        ]
 
         results = convert(str(fake_pdf), model="lighton_ocr_2_1b")
 
@@ -44,16 +43,15 @@ def test_convert_with_base_url_skips_server_launch(tmp_path):
                   image=Image.new("RGB", (100, 100))),
     ]
 
-    with patch("pdf_ocr.convert.convert_pages") as mock_convert, \
+    from pdf_ocr.convert import PageResult
+
+    def fake_streaming(*args, **kwargs):
+        yield [("test", str(fake_pdf), PageResult(page_index=0, markdown="# Hello"))]
+
+    with patch("pdf_ocr.convert.convert_pages_streaming", side_effect=fake_streaming), \
          patch("pdf_ocr.pdf_input.load_pdfs", return_value=iter(fake_pages)), \
          patch("pdf_ocr.server.launch_vllm") as mock_launch, \
          patch("pdf_ocr.server.VLLMClient") as MockClient:
-
-        from pdf_ocr.convert import ConversionResult, PageResult
-        mock_convert.return_value = [
-            ConversionResult(doc_id="test", source=str(fake_pdf),
-                             pages=[PageResult(page_index=0, markdown="# Hello")])
-        ]
 
         results = convert(str(fake_pdf), model="lighton_ocr_2_1b",
                           base_url="http://localhost:8000")
@@ -70,15 +68,14 @@ def test_convert_offline_backend_creates_offline_engine(tmp_path):
                   image=Image.new("RGB", (100, 100))),
     ]
 
-    with patch("pdf_ocr.convert.convert_pages") as mock_convert, \
+    from pdf_ocr.convert import PageResult
+
+    def fake_streaming(*args, **kwargs):
+        yield [("test", str(fake_pdf), PageResult(page_index=0, markdown="# Hello"))]
+
+    with patch("pdf_ocr.convert.convert_pages_streaming", side_effect=fake_streaming), \
          patch("pdf_ocr.pdf_input.load_pdfs", return_value=iter(fake_pages)), \
          patch("pdf_ocr.offline.VLLMOfflineEngine") as MockOffline:
-
-        from pdf_ocr.convert import ConversionResult, PageResult
-        mock_convert.return_value = [
-            ConversionResult(doc_id="test", source=str(fake_pdf),
-                             pages=[PageResult(page_index=0, markdown="# Hello")])
-        ]
 
         results = convert(str(fake_pdf), model="lighton_ocr_2_1b",
                           backend="offline")

@@ -109,7 +109,7 @@ class VLLMOfflineEngine:
                 {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{b64}"}},
             ]}]
 
-        with ThreadPoolExecutor() as pool:
+        with ThreadPoolExecutor(max_workers=self.config.inference.max_encode_workers) as pool:
             messages_list = list(pool.map(_encode_to_message, images))
 
         t_prep = time.monotonic()

@@ -73,14 +73,16 @@ def main() -> None:
     if str(code_dir) not in sys.path:
         sys.path.insert(0, str(code_dir))
 
-    from pdf_ocr import convert
-    from pdf_ocr.storage import push_to_hub
+    from pdf_ocr.config import load_config
+    from pdf_ocr.convert import convert_pages_streaming
+    from pdf_ocr.pdf_input import load_pdfs
+    from pdf_ocr.storage import push_batch_to_hub, save_batch_incremental
 
     source = os.environ.get("INPUT_SOURCE")
     if not source:
         raise RuntimeError("INPUT_SOURCE environment variable must be set")
 
-    model_config = os.environ.get("MODEL_CONFIG", "lighton_ocr_2_1b")
+    model_config_name = os.environ.get("MODEL_CONFIG", "lighton_ocr_2_1b")
     hf_repo_id = os.environ.get("HF_REPO_ID")
     hf_token = os.environ.get("HF_TOKEN")
     private = os.environ.get("PRIVATE", "false").lower() in {"true", "1", "yes"}
@@ -89,40 +91,83 @@ def main() -> None:
     port = int(os.environ.get("PORT", "8000"))
     backend = os.environ.get("BACKEND")
 
-    LOGGER.info("Starting pdf_ocr job: source=%s model=%s backend=%s batch_size=%s", source, model_config, backend, batch_size)
+    LOGGER.info("Starting pdf_ocr job: source=%s model=%s backend=%s batch_size=%s", source, model_config_name, backend, batch_size)
+
+    config = load_config(model_config_name)
+    config = config.with_overrides(batch_size=batch_size, max_tokens=None)
+
+    effective_backend = backend or config.backend
+    if batch_size is not None:
+        effective_batch_size = batch_size
+    elif effective_backend == "offline":
+        effective_batch_size = config.inference.offline_batch_size
+    else:
+        effective_batch_size = config.inference.batch_size
+
+    if effective_backend == "offline":
+        from pdf_ocr.offline import VLLMOfflineEngine
+        client = VLLMOfflineEngine(config)
+    else:
+        from pdf_ocr.server import VLLMClient, launch_vllm, shutdown_server, wait_for_server
+        base_url = f"http://127.0.0.1:{port}"
+        server_process = launch_vllm(config, port=port, host="0.0.0.0")
+        health_url = f"{base_url}/health"
+        if not wait_for_server(health_url):
+            shutdown_server(server_process)
+            raise RuntimeError("vLLM server did not become ready in time")
+        client = VLLMClient(base_url=base_url, config=config)
 
     job_start = time.monotonic()
-    results = convert(
-        source=source,
-        model=model_config,
-        backend=backend,
-        batch_size=batch_size,
-        max_pages=max_pages,
-        token=hf_token,
-        port=port,
-    )
+    pages = load_pdfs(source, config, token=hf_token)
 
-    if hf_repo_id:
-        push_to_hub(
-            results,
-            repo_id=hf_repo_id,
-            private=private,
-            token=hf_token,
-        )
-        LOGGER.info("Results pushed to %s", hf_repo_id)
-    else:
-        from pdf_ocr.storage import save_local
-        output_dir = os.environ.get("OUTPUT_DIR", "./outputs")
-        save_local(results, output_dir)
-        LOGGER.info("Results saved to %s", output_dir)
+    total_pages = 0
+    shard_index = 0
+    flush_every = config.inference.flush_every
+    batch_count = 0
+    pending_hub_rows = []
+    output_dir = os.environ.get("OUTPUT_DIR", "./outputs")
 
-    total_pages = sum(len(r.pages) for r in results)
+    try:
+        for batch_results in convert_pages_streaming(
+            pages,
+            client,
+            batch_size=effective_batch_size,
+            max_pages=max_pages,
+            max_retry_depth=config.inference.max_retry_depth,
+        ):
+            total_pages += len(batch_results)
+            batch_count += 1
+
+            if hf_repo_id:
+                pending_hub_rows.extend(batch_results)
+                if batch_count % flush_every == 0 and pending_hub_rows:
+                    push_batch_to_hub(
+                        pending_hub_rows, repo_id=hf_repo_id,
+                        shard_index=shard_index,
+                        token=hf_token, private=private,
+                    )
+                    shard_index += 1
+                    pending_hub_rows = []
+            else:
+                save_batch_incremental(batch_results, Path(output_dir))
+
+        # Flush remaining hub rows
+        if hf_repo_id and pending_hub_rows:
+            push_batch_to_hub(
+                pending_hub_rows, repo_id=hf_repo_id,
+                shard_index=shard_index,
+                token=hf_token, private=private,
+            )
+    finally:
+        if effective_backend != "offline":
+            shutdown_server(server_process)
+
     elapsed = time.monotonic() - job_start
     LOGGER.info(
-        "Performance summary: %d pages | %d documents | %.1fs total | %.2f pages/s | backend=%s | batch_size=%s",
-        total_pages, len(results), elapsed,
+        "Performance summary: %d pages | %.1fs total | %.2f pages/s | backend=%s | batch_size=%s",
+        total_pages, elapsed,
         total_pages / elapsed if elapsed > 0 else 0,
-        backend, batch_size,
+        backend, effective_batch_size,
     )
 
 

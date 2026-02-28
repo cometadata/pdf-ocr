@@ -2,7 +2,10 @@ import pytest
 from unittest.mock import MagicMock, patch
 from PIL import Image
 
-from pdf_ocr.convert import _batch_pages, _group_by_document, convert_pages
+from pdf_ocr.convert import (
+    _batch_pages, _group_by_document, _infer_with_retry,
+    convert_pages, convert_pages_streaming,
+)
 from pdf_ocr.pdf_input import PageImage
 from pdf_ocr.config import ModelConfig, InferenceConfig
 
@@ -110,3 +113,116 @@ def test_convert_pages_resumes_from_checkpoint(tmp_path):
     assert results[0].pages[0].markdown == "# Page 0"
     assert results[0].pages[2].markdown == "# Page 2"
     mock_client.infer_batch.assert_called_once()
+
+
+# --- _infer_with_retry tests ---
+
+
+def test_infer_with_retry_success_first_try():
+    batch = [_make_page("doc1", 0), _make_page("doc1", 1)]
+    mock_client = MagicMock()
+    mock_client.infer_batch.return_value = ["# Page 0", "# Page 1"]
+
+    results = _infer_with_retry(mock_client, batch, max_depth=3)
+
+    assert results == ["# Page 0", "# Page 1"]
+    mock_client.infer_batch.assert_called_once()
+
+
+def test_infer_with_retry_subdivides_on_failure():
+    batch = [_make_page("doc1", i) for i in range(4)]
+    mock_client = MagicMock()
+    # First call (full batch) fails, sub-batches succeed
+    mock_client.infer_batch.side_effect = [
+        RuntimeError("OOM"),
+        ["md0", "md1"],
+        ["md2", "md3"],
+    ]
+
+    results = _infer_with_retry(mock_client, batch, max_depth=3)
+
+    assert results == ["md0", "md1", "md2", "md3"]
+    assert mock_client.infer_batch.call_count == 3
+
+
+def test_infer_with_retry_empty_at_max_depth():
+    batch = [_make_page("doc1", 0)]
+    mock_client = MagicMock()
+    mock_client.infer_batch.side_effect = RuntimeError("always fails")
+
+    results = _infer_with_retry(mock_client, batch, max_depth=0)
+
+    assert results == [""]
+
+
+def test_infer_with_retry_isolates_single_bad_page():
+    """One bad page among 4 should only blank that page, not the whole batch."""
+    batch = [_make_page("doc1", i) for i in range(4)]
+    mock_client = MagicMock()
+
+    call_count = [0]
+    def side_effect(images):
+        call_count[0] += 1
+        # Full batch fails, sub-batches of 2 fail if they contain page 2
+        if len(images) == 4:
+            raise RuntimeError("OOM")
+        if len(images) == 2 and images[1] is batch[2].image:
+            raise RuntimeError("Bad page in sub-batch")
+        if len(images) == 2 and images[0] is batch[2].image:
+            raise RuntimeError("Bad page in sub-batch")
+        if len(images) == 1 and images[0] is batch[2].image:
+            raise RuntimeError("Single bad page")
+        return [f"md{i}" for i in range(len(images))]
+
+    mock_client.infer_batch.side_effect = side_effect
+
+    results = _infer_with_retry(mock_client, batch, max_depth=3)
+
+    # Pages 0, 1, 3 should have content; page 2 should be empty
+    assert len(results) == 4
+    assert results[2] == ""
+    assert all(r != "" for i, r in enumerate(results) if i != 2)
+
+
+# --- convert_pages_streaming tests ---
+
+
+def test_convert_pages_streaming_yields_batches():
+    pages = [_make_page("doc1", i) for i in range(5)]
+
+    mock_client = MagicMock()
+    mock_client.infer_batch.side_effect = [
+        ["md0", "md1"],
+        ["md2", "md3"],
+        ["md4"],
+    ]
+
+    batches = list(convert_pages_streaming(iter(pages), mock_client, batch_size=2))
+
+    assert len(batches) == 3
+    assert len(batches[0]) == 2
+    assert len(batches[1]) == 2
+    assert len(batches[2]) == 1
+    # Verify content
+    assert batches[0][0][2].markdown == "md0"
+    assert batches[2][0][2].markdown == "md4"
+
+
+def test_convert_pages_streaming_checkpoint_compat(tmp_path):
+    """Streaming should produce checkpoints identical to convert_pages."""
+    pages = [_make_page("doc1", i) for i in range(3)]
+
+    mock_client = MagicMock()
+    mock_client.infer_batch.side_effect = [
+        ["md0", "md1"],
+        ["md2"],
+    ]
+
+    batches = list(convert_pages_streaming(
+        iter(pages), mock_client, batch_size=2, checkpoint_dir=tmp_path
+    ))
+
+    checkpoint_dir = tmp_path / ".checkpoints"
+    assert checkpoint_dir.is_dir()
+    checkpoint_files = sorted(checkpoint_dir.glob("batch_*.json"))
+    assert len(checkpoint_files) == 2

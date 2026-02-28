@@ -220,3 +220,51 @@ class TestVLLMOfflineEngine:
         with patch("pdf_ocr.offline.LOGGER") as mock_logger:
             engine = VLLMOfflineEngine(config)
             mock_logger.warning.assert_called_once()
+
+    @patch.dict("sys.modules", {"vllm": MagicMock()})
+    def test_thread_pool_uses_max_encode_workers(self):
+        """ThreadPoolExecutor should receive max_workers from config."""
+        from PIL import Image
+        import sys
+
+        mock_vllm = sys.modules["vllm"]
+        mock_llm_instance = MagicMock()
+        mock_vllm.LLM.return_value = mock_llm_instance
+
+        mock_output = MagicMock()
+        mock_output.outputs = [MagicMock(text="# Result")]
+        mock_llm_instance.chat.return_value = [mock_output]
+
+        config = ModelConfig(
+            model_id="test/model",
+            served_model_name="test-model",
+            vllm_args={"trust-remote-code": True},
+            inference=InferenceConfig(max_encode_workers=4),
+        )
+        engine = VLLMOfflineEngine(config)
+
+        with patch("pdf_ocr.offline.ThreadPoolExecutor") as MockPool:
+            mock_pool_instance = MagicMock()
+            mock_pool_instance.__enter__ = MagicMock(return_value=mock_pool_instance)
+            mock_pool_instance.__exit__ = MagicMock(return_value=False)
+            mock_pool_instance.map.return_value = [[{"role": "user", "content": []}]]
+            MockPool.return_value = mock_pool_instance
+
+            img = Image.new("RGB", (100, 100))
+            engine.infer_batch([img])
+
+            MockPool.assert_called_once_with(max_workers=4)
+
+    @patch.dict("sys.modules", {"vllm": MagicMock()})
+    def test_default_max_encode_workers_is_8(self):
+        """Default config should use max_encode_workers=8."""
+        import sys
+
+        mock_vllm = sys.modules["vllm"]
+        mock_vllm.LLM.return_value = MagicMock()
+
+        config = ModelConfig(
+            model_id="test/model",
+            served_model_name="test-model",
+        )
+        assert config.inference.max_encode_workers == 8
