@@ -123,3 +123,14 @@ def test_new_inference_fields_with_overrides():
     config = config.with_overrides(offline_batch_size=64, max_encode_workers=16)
     assert config.inference.offline_batch_size == 64
     assert config.inference.max_encode_workers == 16
+
+
+def test_auto_parallel_default_true():
+    config = load_config("lighton_ocr_2_1b")
+    assert config.inference.auto_parallel is True
+
+
+def test_auto_parallel_override_false():
+    config = load_config("lighton_ocr_2_1b")
+    config = config.with_overrides(auto_parallel=False)
+    assert config.inference.auto_parallel is False
