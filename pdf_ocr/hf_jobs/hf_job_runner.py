@@ -16,7 +16,11 @@
 """
 Entrypoint for HuggingFace Jobs.
 
-Installs pdf_ocr from GitHub and runs the conversion pipeline.
+Expects pdf_ocr to be pre-installed (e.g. via pip) in the same Python
+environment.  When using the offline backend with a vllm Docker image,
+launch via run_job (not run_uv_job) so that the system-installed vllm
+is visible.
+
 All configuration is via environment variables.
 """
 
@@ -24,14 +28,8 @@ from __future__ import annotations
 
 import logging
 import os
-import site
 import sys
 from pathlib import Path
-
-# Make system site-packages visible so vllm from the docker image is importable
-for _sp in site.getsitepackages():
-    if _sp not in sys.path:
-        sys.path.insert(0, _sp)
 
 LOGGER = logging.getLogger(__name__)
 
