@@ -1,7 +1,8 @@
 # /// script
 # requires-python = ">=3.11"
 # dependencies = [
-#     "pdf-ocr[offline] @ https://github.com/cometadata/pdf-ocr/archive/main.tar.gz",
+#     "pdf-ocr @ https://github.com/cometadata/pdf-ocr/archive/main.tar.gz",
+#     "vllm>=0.16.0",
 #     "huggingface-hub",
 #     "datasets>=4.0.0",
 #     "pyarrow>=12.0.0",
