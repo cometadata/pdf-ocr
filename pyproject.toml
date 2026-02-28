@@ -1,0 +1,24 @@
+[build-system]
+requires = ["setuptools>=68.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "pdf-ocr"
+version = "0.1.0"
+requires-python = ">=3.11"
+dependencies = [
+    "huggingface-hub",
+    "datasets>=4.0.0",
+    "pyarrow>=12.0.0",
+    "pillow",
+    "pypdfium2",
+    "requests",
+    "openai",
+    "pyyaml",
+]
+
+[project.scripts]
+pdf_ocr = "pdf_ocr.cli:main"
+
+[tool.setuptools.package-data]
+pdf_ocr = ["models/*.yaml"]
