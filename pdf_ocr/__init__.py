@@ -33,7 +33,12 @@ def convert(
     config = config.with_overrides(batch_size=batch_size, max_tokens=None)
 
     effective_backend = backend or config.backend
-    effective_batch_size = batch_size or config.inference.batch_size
+    if batch_size is not None:
+        effective_batch_size = batch_size
+    elif effective_backend == "offline":
+        effective_batch_size = 512
+    else:
+        effective_batch_size = config.inference.batch_size
     hf_token = token or os.environ.get("HF_TOKEN")
 
     if base_url is not None and effective_backend == "offline":

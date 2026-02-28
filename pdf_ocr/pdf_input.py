@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import enum
 import logging
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterator, List, Optional
@@ -45,6 +46,7 @@ def render_page(page, cfg: PdfRenderingConfig) -> Image.Image:
 
 def render_pdf(source: str | Path, cfg: PdfRenderingConfig, doc_id: Optional[str] = None) -> List[PageImage]:
     """Render all pages from a PDF file."""
+    t0 = time.monotonic()
     path = Path(source)
     if doc_id is None:
         doc_id = path.stem
@@ -54,16 +56,19 @@ def render_pdf(source: str | Path, cfg: PdfRenderingConfig, doc_id: Optional[str
     for i in range(len(pdf)):
         image = render_page(pdf[i], cfg)
         pages.append(PageImage(doc_id=doc_id, source=str(path), page_index=i, image=image))
+    LOGGER.info("Rendered %d pages from %s in %.2fs", len(pages), doc_id, time.monotonic() - t0)
     return pages
 
 
 def render_pdf_bytes(data: bytes, cfg: PdfRenderingConfig, doc_id: str, source: str = "") -> List[PageImage]:
     """Render all pages from PDF bytes."""
+    t0 = time.monotonic()
     pdf = pdfium.PdfDocument(data)
     pages = []
     for i in range(len(pdf)):
         image = render_page(pdf[i], cfg)
         pages.append(PageImage(doc_id=doc_id, source=source or doc_id, page_index=i, image=image))
+    LOGGER.info("Rendered %d pages from %s in %.2fs", len(pages), doc_id, time.monotonic() - t0)
     return pages
 
 
@@ -76,7 +81,6 @@ def detect_input_type(source: str) -> InputType:
         return InputType.PDF_FILE
     if path.is_dir():
         return InputType.DIRECTORY
-    # If it contains a slash but isn't a local path, treat as HF dataset
     if "/" in source and not path.exists():
         return InputType.HF_DATASET
     raise ValueError(f"Cannot determine input type for: {source!r}")
@@ -103,21 +107,18 @@ def _load_hf_dataset(source: str, cfg: PdfRenderingConfig, pdf_column: Optional[
     """Load pages from a HuggingFace dataset or repo containing PDFs."""
     repo_id = source.removeprefix("hf://")
 
-    # Try loading as a raw file repo first (PDFs uploaded directly)
     try:
         yield from _load_hf_repo_files(repo_id, cfg, token=token)
         return
     except Exception:
         pass
 
-    # Try loading as a dataset
     from datasets import load_dataset
     try:
         ds = load_dataset(repo_id, split=split, token=token)
     except Exception as exc:
         raise ValueError(f"Could not load HF source {repo_id!r}: {exc}") from exc
 
-    # Detect the PDF column
     col = _detect_pdf_column(ds, pdf_column)
     if col is None:
         raise ValueError(
@@ -136,7 +137,6 @@ def _load_hf_dataset(source: str, cfg: PdfRenderingConfig, pdf_column: Optional[
         if isinstance(value, bytes):
             yield from render_pdf_bytes(value, cfg, doc_id=str(doc_id), source=repo_id)
         elif isinstance(value, str):
-            # Could be a URL or file path
             if value.startswith("http://") or value.startswith("https://"):
                 import requests as req
                 resp = req.get(value, timeout=60)
@@ -145,7 +145,6 @@ def _load_hf_dataset(source: str, cfg: PdfRenderingConfig, pdf_column: Optional[
             else:
                 yield from render_pdf(value, cfg, doc_id=str(doc_id))
         elif isinstance(value, dict) and "bytes" in value:
-            # HF datasets sometimes store binary as {"bytes": b"...", "path": "..."}
             yield from render_pdf_bytes(value["bytes"], cfg, doc_id=str(doc_id), source=repo_id)
         else:
             LOGGER.warning("Skipping row %d: unsupported value type %s", idx, type(value))

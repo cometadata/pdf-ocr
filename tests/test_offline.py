@@ -99,24 +99,27 @@ class TestBuildEngineKwargs:
         assert kwargs["enable_prefix_caching"] is True
 
     def test_full_lighton_config(self):
+        """Mirrors the current lighton_ocr_2_1b.yaml after optimization."""
         config = self._make_config({
             "limit-mm-per-prompt": '{"image": 1}',
-            "mm-processor-cache-gb": 0,
-            "no-enable-prefix-caching": True,
+            "mm-processor-cache-gb": 4,
             "enable-chunked-prefill": True,
             "max-model-len": 4096,
-            "gpu-memory-utilization": 0.90,
+            "max-num-batched-tokens": 32768,
+            "gpu-memory-utilization": 0.95,
             "trust-remote-code": True,
         })
         kwargs = build_engine_kwargs(config)
         assert kwargs["model"] == "test/model"
         assert kwargs["limit_mm_per_prompt"] == {"image": 1}
-        assert kwargs["mm_processor_cache_gb"] == 0
-        assert kwargs["enable_prefix_caching"] is False
+        assert kwargs["mm_processor_cache_gb"] == 4
         assert kwargs["enable_chunked_prefill"] is True
         assert kwargs["max_model_len"] == 4096
-        assert kwargs["gpu_memory_utilization"] == 0.90
+        assert kwargs["max_num_batched_tokens"] == 32768
+        assert kwargs["gpu_memory_utilization"] == 0.95
         assert kwargs["trust_remote_code"] is True
+        # prefix caching no longer explicitly disabled
+        assert "enable_prefix_caching" not in kwargs
 
 
 class TestVLLMOfflineEngine:
@@ -180,6 +183,11 @@ class TestVLLMOfflineEngine:
 
         assert results == ["# Hello World"]
         mock_llm_instance.chat.assert_called_once()
+
+        call_args = mock_llm_instance.chat.call_args
+        messages_list = call_args[1].get("messages") or call_args[0][0]
+        image_url = messages_list[0][0]["content"][0]["image_url"]["url"]
+        assert isinstance(image_url, Image.Image), "Should pass PIL Image directly, not base64 string"
 
     @patch.dict("sys.modules", {"vllm": MagicMock()})
     def test_infer_batch_empty(self):

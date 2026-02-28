@@ -95,6 +95,7 @@ def convert_pages(
     for batch in _batch_pages(limited_pages(), batch_size):
         batch_count += 1
         images = [p.image for p in batch]
+        batch_start = time.time()
 
         LOGGER.info("Processing batch %d (%d pages)", batch_count, len(images))
         try:
@@ -116,7 +117,18 @@ def convert_pages(
         all_results.extend(batch_results)
 
         if checkpoint_dir is not None:
+            ckpt_start = time.time()
             save_batch_checkpoint(batch_results, checkpoint_dir, batch_count - 1 + (skip_pages // max(batch_size, 1)))
+            LOGGER.info("Checkpoint saved in %.2fs", time.time() - ckpt_start)
+
+        batch_elapsed = time.time() - batch_start
+        LOGGER.info(
+            "Batch %d complete: %d pages in %.2fs (%.2f pages/s) | cumulative: %d pages in %.2fs (%.2f pages/s)",
+            batch_count, len(images), batch_elapsed,
+            len(images) / batch_elapsed if batch_elapsed > 0 else 0,
+            page_count, time.time() - start,
+            page_count / (time.time() - start) if (time.time() - start) > 0 else 0,
+        )
 
     elapsed = time.time() - start
     total_pages = page_count + skip_pages

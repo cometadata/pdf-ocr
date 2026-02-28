@@ -3,11 +3,11 @@ served_model_name: lighton-ocr
 
 vllm_args:
   limit-mm-per-prompt: '{"image": 1}'
-  mm-processor-cache-gb: 0
-  no-enable-prefix-caching: true
+  mm-processor-cache-gb: 4
   enable-chunked-prefill: true
   max-model-len: 4096
-  gpu-memory-utilization: 0.90
+  max-num-batched-tokens: 32768
+  gpu-memory-utilization: 0.95
   trust-remote-code: true
 
 inference:

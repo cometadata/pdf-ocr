@@ -3,6 +3,7 @@ from __future__ import annotations
 import base64
 import json
 import logging
+import time
 from io import BytesIO
 from typing import TYPE_CHECKING, Any, Dict, List, Sequence
 
@@ -13,7 +14,6 @@ if TYPE_CHECKING:
 
 LOGGER = logging.getLogger(__name__)
 
-# vllm_args keys that only apply to the server CLI; skipped for offline use
 _SERVER_ONLY_ARGS = frozenset({
     "served-model-name",
     "host",
@@ -26,7 +26,6 @@ _SERVER_ONLY_ARGS = frozenset({
     "chat-template",
 })
 
-# "no-" prefixed flags negate the underlying kwarg
 _NEGATION_FLAGS = frozenset({
     "no-enable-prefix-caching",
 })
@@ -67,6 +66,7 @@ def build_engine_kwargs(config: ModelConfig) -> Dict[str, Any]:
 
 
 def encode_image(image: "Image.Image") -> str:
+    """Encode a PIL image to a base64 PNG string (used by server backend)."""
     buffer = BytesIO()
     image.save(buffer, format="PNG")
     return base64.b64encode(buffer.getvalue()).decode("utf-8")
@@ -87,7 +87,9 @@ class VLLMOfflineEngine:
 
         engine_kwargs = build_engine_kwargs(config)
         LOGGER.info("Initializing offline vLLM engine: %s", engine_kwargs)
+        t0 = time.monotonic()
         self._llm = LLM(**engine_kwargs)
+        LOGGER.info("vLLM engine initialized in %.2fs", time.monotonic() - t0)
         self._sampling_params = SamplingParams(
             max_tokens=config.inference.max_tokens,
             temperature=config.inference.temperature,
@@ -98,30 +100,31 @@ class VLLMOfflineEngine:
         if not images:
             return []
 
+        t0 = time.monotonic()
         messages_list = []
         for image in images:
-            b64 = encode_image(image)
-            messages_list.append([
-                {
-                    "role": "user",
-                    "content": [
-                        {
-                            "type": "image_url",
-                            "image_url": {
-                                "url": f"data:image/png;base64,{b64}",
-                            },
-                        },
-                    ],
-                }
-            ])
+            messages_list.append([{
+                "role": "user",
+                "content": [
+                    {"type": "image_url", "image_url": {"url": image}},
+                ],
+            }])
+        t_prep = time.monotonic()
 
         outputs = self._llm.chat(
             messages=messages_list,
             sampling_params=self._sampling_params,
         )
+        t_infer = time.monotonic()
 
-        results: List[str] = []
-        for output in outputs:
-            text = output.outputs[0].text if output.outputs else ""
-            results.append(text)
+        results = [o.outputs[0].text if o.outputs else "" for o in outputs]
+
+        LOGGER.info(
+            "Batch inference: %d images | prep=%.2fs | vllm_chat=%.2fs | total=%.2fs | %.2f pages/s",
+            len(images),
+            t_prep - t0,
+            t_infer - t_prep,
+            t_infer - t0,
+            len(images) / (t_infer - t0),
+        )
         return results

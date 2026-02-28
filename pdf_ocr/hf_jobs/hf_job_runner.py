@@ -29,6 +29,7 @@ from __future__ import annotations
 import logging
 import os
 import sys
+import time
 from pathlib import Path
 
 LOGGER = logging.getLogger(__name__)
@@ -88,8 +89,9 @@ def main() -> None:
     port = int(os.environ.get("PORT", "8000"))
     backend = os.environ.get("BACKEND")
 
-    LOGGER.info("Starting pdf_ocr job: source=%s model=%s backend=%s", source, model_config, backend)
+    LOGGER.info("Starting pdf_ocr job: source=%s model=%s backend=%s batch_size=%s", source, model_config, backend, batch_size)
 
+    job_start = time.monotonic()
     results = convert(
         source=source,
         model=model_config,
@@ -109,14 +111,19 @@ def main() -> None:
         )
         LOGGER.info("Results pushed to %s", hf_repo_id)
     else:
-        # Save locally as fallback
         from pdf_ocr.storage import save_local
         output_dir = os.environ.get("OUTPUT_DIR", "./outputs")
         save_local(results, output_dir)
         LOGGER.info("Results saved to %s", output_dir)
 
     total_pages = sum(len(r.pages) for r in results)
-    LOGGER.info("Job complete: %d documents, %d pages", len(results), total_pages)
+    elapsed = time.monotonic() - job_start
+    LOGGER.info(
+        "Performance summary: %d pages | %d documents | %.1fs total | %.2f pages/s | backend=%s | batch_size=%s",
+        total_pages, len(results), elapsed,
+        total_pages / elapsed if elapsed > 0 else 0,
+        backend, batch_size,
+    )
 
 
 if __name__ == "__main__":
