@@ -187,7 +187,7 @@ class TestVLLMOfflineEngine:
         call_args = mock_llm_instance.chat.call_args
         messages_list = call_args[1].get("messages") or call_args[0][0]
         image_url = messages_list[0][0]["content"][0]["image_url"]["url"]
-        assert isinstance(image_url, Image.Image), "Should pass PIL Image directly, not base64 string"
+        assert isinstance(image_url, str) and image_url.startswith("data:image/png;base64,")
 
     @patch.dict("sys.modules", {"vllm": MagicMock()})
     def test_infer_batch_empty(self):
