@@ -1,0 +1,32 @@
+# DeepSeek-OCR-2 vLLM configuration
+# Based on: https://github.com/deepseek-ai/DeepSeek-OCR-2
+# Note: You may need to set VLLM_USE_V1=0 in your environment
+#       if using a newer vLLM version where the v1 engine is default.
+
+model_id: deepseek-ai/DeepSeek-OCR-2
+served_model_name: deepseek-ocr-2
+
+vllm_args:
+  max-model-len: 8192
+  gpu-memory-utilization: 0.75
+  trust-remote-code: true
+  dtype: bfloat16
+  tensor-parallel-size: 1
+  hf-overrides: '{"architectures": ["DeepseekOCR2ForCausalLM"]}'
+  limit-mm-per-prompt: '{"image": 1}'
+  no-enable-prefix-caching: true
+  enable-chunked-prefill: true
+
+inference:
+  max_tokens: 8192
+  temperature: 0.0
+  top_p: 1.0
+  batch_size: 2
+  max_concurrency: 2
+  request_timeout: 300
+  max_retries: 3
+  retry_backoff: 2.0
+
+pdf_rendering:
+  dpi: 144
+  max_dimension: 1540
