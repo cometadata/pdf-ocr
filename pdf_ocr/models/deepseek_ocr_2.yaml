@@ -12,7 +12,7 @@ vllm_args:
   trust-remote-code: true
   dtype: bfloat16
   tensor-parallel-size: 1
-  hf-overrides: '{"architectures": ["DeepseekOCRForCausalLM"]}'
+  hf-overrides: '{"architectures": ["DeepseekOCR2ForCausalLM"]}'
   limit-mm-per-prompt: '{"image": 1}'
   no-enable-prefix-caching: true
   enable-chunked-prefill: true
