@@ -4,6 +4,7 @@ import base64
 import json
 import logging
 import time
+from concurrent.futures import ThreadPoolExecutor
 from io import BytesIO
 from typing import TYPE_CHECKING, Any, Dict, List, Sequence
 
@@ -66,9 +67,9 @@ def build_engine_kwargs(config: ModelConfig) -> Dict[str, Any]:
 
 
 def encode_image(image: "Image.Image") -> str:
-    """Encode a PIL image to a base64 PNG string (used by server backend)."""
+    """Encode a PIL image to a base64 JPEG string for offline inference."""
     buffer = BytesIO()
-    image.save(buffer, format="PNG")
+    image.save(buffer, format="JPEG", quality=95)
     return base64.b64encode(buffer.getvalue()).decode("utf-8")
 
 
@@ -101,18 +102,16 @@ class VLLMOfflineEngine:
             return []
 
         t0 = time.monotonic()
-        messages_list = []
-        for image in images:
+
+        def _encode_to_message(image: "Image.Image") -> list:
             b64 = encode_image(image)
-            messages_list.append([{
-                "role": "user",
-                "content": [
-                    {
-                        "type": "image_url",
-                        "image_url": {"url": f"data:image/png;base64,{b64}"},
-                    },
-                ],
-            }])
+            return [{"role": "user", "content": [
+                {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{b64}"}},
+            ]}]
+
+        with ThreadPoolExecutor() as pool:
+            messages_list = list(pool.map(_encode_to_message, images))
+
         t_prep = time.monotonic()
 
         outputs = self._llm.chat(

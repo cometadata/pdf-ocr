@@ -102,24 +102,23 @@ class TestBuildEngineKwargs:
         """Mirrors the current lighton_ocr_2_1b.yaml after optimization."""
         config = self._make_config({
             "limit-mm-per-prompt": '{"image": 1}',
-            "mm-processor-cache-gb": 4,
+            "no-enable-prefix-caching": True,
+            "mm-processor-cache-gb": 0,
             "enable-chunked-prefill": True,
             "max-model-len": 4096,
-            "max-num-batched-tokens": 16384,
             "gpu-memory-utilization": 0.90,
             "trust-remote-code": True,
         })
         kwargs = build_engine_kwargs(config)
         assert kwargs["model"] == "test/model"
         assert kwargs["limit_mm_per_prompt"] == {"image": 1}
-        assert kwargs["mm_processor_cache_gb"] == 4
+        assert kwargs["enable_prefix_caching"] is False
+        assert kwargs["mm_processor_cache_gb"] == 0
         assert kwargs["enable_chunked_prefill"] is True
         assert kwargs["max_model_len"] == 4096
-        assert kwargs["max_num_batched_tokens"] == 16384
         assert kwargs["gpu_memory_utilization"] == 0.90
         assert kwargs["trust_remote_code"] is True
-        # prefix caching no longer explicitly disabled
-        assert "enable_prefix_caching" not in kwargs
+        assert "max_num_batched_tokens" not in kwargs
 
 
 class TestVLLMOfflineEngine:
@@ -187,7 +186,7 @@ class TestVLLMOfflineEngine:
         call_args = mock_llm_instance.chat.call_args
         messages_list = call_args[1].get("messages") or call_args[0][0]
         image_url = messages_list[0][0]["content"][0]["image_url"]["url"]
-        assert isinstance(image_url, str) and image_url.startswith("data:image/png;base64,")
+        assert isinstance(image_url, str) and image_url.startswith("data:image/jpeg;base64,")
 
     @patch.dict("sys.modules", {"vllm": MagicMock()})
     def test_infer_batch_empty(self):
