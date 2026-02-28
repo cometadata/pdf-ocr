@@ -6,7 +6,8 @@ import logging
 import time
 from collections import OrderedDict
 from dataclasses import dataclass
-from typing import Iterator, List, Sequence, Tuple
+from pathlib import Path
+from typing import Iterator, List, Optional, Sequence, Tuple
 
 from .pdf_input import PageImage
 from .server import VLLMClient
@@ -28,7 +29,6 @@ class ConversionResult:
 
 
 def _batch_pages(pages: Iterator[PageImage], batch_size: int) -> Iterator[List[PageImage]]:
-    """Group page images into batches."""
     batch: List[PageImage] = []
     for page in pages:
         batch.append(page)
@@ -42,13 +42,11 @@ def _batch_pages(pages: Iterator[PageImage], batch_size: int) -> Iterator[List[P
 def _group_by_document(
     results: List[Tuple[str, str, PageResult]],
 ) -> List[ConversionResult]:
-    """Group page results by document, preserving order."""
     docs: OrderedDict[str, ConversionResult] = OrderedDict()
     for doc_id, source, page_result in results:
         if doc_id not in docs:
             docs[doc_id] = ConversionResult(doc_id=doc_id, source=source, pages=[])
         docs[doc_id].pages.append(page_result)
-    # Sort pages within each document
     for doc in docs.values():
         doc.pages.sort(key=lambda p: p.page_index)
     return list(docs.values())
@@ -59,27 +57,33 @@ def convert_pages(
     client: VLLMClient,
     batch_size: int = 4,
     max_pages: int | None = None,
+    checkpoint_dir: Optional[Path] = None,
+    resume_from_checkpoint: bool = False,
 ) -> List[ConversionResult]:
-    """Convert page images to markdown via vLLM.
+    """Convert page images to markdown via vLLM."""
+    from .storage import load_checkpoints, save_batch_checkpoint
 
-    Args:
-        pages: Iterator of PageImage objects.
-        client: VLLMClient connected to a running vLLM server.
-        batch_size: Number of pages per inference batch.
-        max_pages: Optional limit on total pages processed.
-
-    Returns:
-        List of ConversionResult, one per document.
-    """
     start = time.time()
     all_results: List[Tuple[str, str, PageResult]] = []
     page_count = 0
     batch_count = 0
+    skip_pages = 0
 
-    # Apply max_pages limit
+    if resume_from_checkpoint and checkpoint_dir is not None:
+        previous = load_checkpoints(checkpoint_dir)
+        if previous:
+            all_results.extend(previous)
+            skip_pages = len(previous)
+            LOGGER.info("Resuming from checkpoint: skipping %d already-processed pages", skip_pages)
+
     def limited_pages():
         nonlocal page_count
+        skipped = 0
         for page in pages:
+            if skipped < skip_pages:
+                skipped += 1
+                page.image.close()
+                continue
             if max_pages and page_count >= max_pages:
                 break
             page_count += 1
@@ -96,18 +100,26 @@ def convert_pages(
             LOGGER.exception("Batch %d failed", batch_count)
             markdowns = [""] * len(batch)
 
+        batch_results: List[Tuple[str, str, PageResult]] = []
         for page, md in zip(batch, markdowns):
-            all_results.append((
+            result = (
                 page.doc_id,
                 page.source,
                 PageResult(page_index=page.page_index, markdown=md.strip()),
-            ))
+            )
+            batch_results.append(result)
             page.image.close()
 
+        all_results.extend(batch_results)
+
+        if checkpoint_dir is not None:
+            save_batch_checkpoint(batch_results, checkpoint_dir, batch_count - 1 + (skip_pages // max(batch_size, 1)))
+
     elapsed = time.time() - start
+    total_pages = page_count + skip_pages
     results = _group_by_document(all_results)
     LOGGER.info(
         "Conversion complete: %d pages, %d documents, %.1fs",
-        page_count, len(results), elapsed,
+        total_pages, len(results), elapsed,
     )
     return results

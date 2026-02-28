@@ -25,14 +25,12 @@ LOGGER = logging.getLogger(__name__)
 
 
 def encode_image(image: "Image.Image") -> str:
-    """Encode a PIL Image to base64 PNG string."""
     buffer = BytesIO()
     image.save(buffer, format="PNG")
     return base64.b64encode(buffer.getvalue()).decode("utf-8")
 
 
 def _format_arg(value: Any) -> str:
-    """Format a vllm_args value as a CLI string."""
     if isinstance(value, float):
         formatted = f"{value:.2f}"
         return formatted
@@ -40,7 +38,6 @@ def _format_arg(value: Any) -> str:
 
 
 def build_vllm_command(config: ModelConfig, port: int = 8000, host: str = "0.0.0.0") -> List[str]:
-    """Build vLLM serve command from model config."""
     cmd = [
         "vllm", "serve", config.model_id,
         "--served-model-name", config.served_model_name,
@@ -55,7 +52,6 @@ def build_vllm_command(config: ModelConfig, port: int = 8000, host: str = "0.0.0
 
 
 def _stream_output(pipe, prefix: str) -> None:
-    """Stream subprocess output to stdout with prefix."""
     try:
         for line in iter(pipe.readline, ""):
             print(f"[{prefix}] {line.rstrip()}", flush=True)
@@ -64,7 +60,6 @@ def _stream_output(pipe, prefix: str) -> None:
 
 
 def launch_vllm(config: ModelConfig, port: int = 8000, host: str = "0.0.0.0") -> subprocess.Popen:
-    """Launch vLLM server as subprocess."""
     cmd = build_vllm_command(config, port=port, host=host)
     LOGGER.info("Launching vLLM server: %s", " ".join(cmd))
 
@@ -86,7 +81,6 @@ def launch_vllm(config: ModelConfig, port: int = 8000, host: str = "0.0.0.0") ->
 
 
 def shutdown_server(server_process: subprocess.Popen) -> None:
-    """Gracefully shutdown vLLM server."""
     LOGGER.info("Shutting down vLLM server")
     server_process.send_signal(signal.SIGTERM)
     try:
@@ -99,7 +93,6 @@ def shutdown_server(server_process: subprocess.Popen) -> None:
 
 
 def wait_for_server(url: str, timeout_s: int = 600, interval_s: int = 5) -> bool:
-    """Wait for server health endpoint to respond."""
     start = time.time()
     LOGGER.info("Waiting for vLLM server at %s ...", url)
     deadline = time.time() + timeout_s
@@ -122,11 +115,12 @@ class VLLMClient:
     def __init__(self, base_url: str, config: ModelConfig) -> None:
         self.base_url = base_url.rstrip("/")
         self.config = config
+        self.max_retries = max(0, config.inference.max_retries)
+        self.retry_backoff = max(0.0, config.inference.retry_backoff)
         self._client = AsyncOpenAI(api_key="vllm", base_url=f"{self.base_url}/v1")
 
     def _prepare_payload(self, image: "Image.Image") -> Dict[str, Any]:
-        """Prepare OpenAI-compatible chat completion payload."""
-        return {
+        payload: Dict[str, Any] = {
             "model": self.config.served_model_name,
             "messages": [
                 {
@@ -145,41 +139,63 @@ class VLLMClient:
             "temperature": self.config.inference.temperature,
             "top_p": self.config.inference.top_p,
         }
+        if self.config.inference.extra_body:
+            payload["extra_body"] = self.config.inference.extra_body
+        return payload
 
     async def _async_completion(self, payload: Dict[str, Any]) -> str:
-        """Execute single async completion request."""
         timeout = self.config.inference.request_timeout
-        try:
-            response = await self._client.chat.completions.create(
-                model=payload["model"],
-                messages=payload["messages"],
-                max_tokens=payload["max_tokens"],
-                temperature=payload["temperature"],
-                top_p=payload.get("top_p"),
-                timeout=timeout,
-            )
-        except Exception as exc:
-            LOGGER.error("vLLM request failed: %s", exc)
-            raise
-        if not response.choices:
-            return ""
-        return getattr(response.choices[0].message, "content", "") or ""
+        last_exc: Exception | None = None
+
+        for attempt in range(1, self.max_retries + 1):
+            try:
+                kwargs: Dict[str, Any] = dict(
+                    model=payload["model"],
+                    messages=payload["messages"],
+                    max_tokens=payload["max_tokens"],
+                    temperature=payload["temperature"],
+                    top_p=payload.get("top_p"),
+                    timeout=timeout,
+                )
+                extra_body = payload.get("extra_body")
+                if extra_body:
+                    kwargs["extra_body"] = extra_body
+
+                response = await self._client.chat.completions.create(**kwargs)
+            except Exception as exc:
+                last_exc = exc
+                if attempt < self.max_retries:
+                    wait = min(self.retry_backoff * 2 ** (attempt - 1), 60.0)
+                    LOGGER.warning(
+                        "vLLM request failed (attempt %d/%d): %s — retrying in %.1fs",
+                        attempt, self.max_retries, exc, wait,
+                    )
+                    await asyncio.sleep(wait)
+                    continue
+                LOGGER.error(
+                    "vLLM request failed after %d attempts: %s", self.max_retries, exc
+                )
+                raise
+            if not response.choices:
+                return ""
+            return getattr(response.choices[0].message, "content", "") or ""
+
+        # Should not reach here, but satisfy type checker
+        assert last_exc is not None
+        raise last_exc
 
     def infer_batch(self, images: Sequence["Image.Image"]) -> List[str]:
-        """Run batch inference synchronously. Returns list of markdown strings."""
         if not images:
             return []
         payloads = [self._prepare_payload(img) for img in images]
         return self._run_async(self._async_infer_batch(payloads))
 
     async def _async_infer_batch(self, payloads: Sequence[Dict[str, Any]]) -> List[str]:
-        """Run batch of async completions concurrently."""
         tasks = [asyncio.create_task(self._async_completion(p)) for p in payloads]
         return await asyncio.gather(*tasks)
 
     @staticmethod
     def _run_async(coro: Awaitable[Any]) -> Any:
-        """Run async coroutine in new event loop."""
         loop = asyncio.new_event_loop()
         try:
             asyncio.set_event_loop(loop)

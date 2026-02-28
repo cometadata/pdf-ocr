@@ -1,7 +1,14 @@
 import pytest
 from pathlib import Path
 
-from pdf_ocr.storage import save_local, results_to_dataset
+from pdf_ocr.storage import (
+    save_local,
+    results_to_dataset,
+    save_batch_checkpoint,
+    load_checkpoints,
+    clear_checkpoints,
+    CHECKPOINT_DIR_NAME,
+)
 from pdf_ocr.convert import ConversionResult, PageResult
 
 
@@ -65,3 +72,57 @@ def test_results_to_dataset():
     assert ds[0]["page_index"] == 0
     assert ds[1]["page_index"] == 1
     assert ds[2]["doc_id"] == "subdir/paper2"
+
+
+def test_save_batch_checkpoint(tmp_path):
+    batch_results = [
+        ("doc1", "doc1.pdf", PageResult(page_index=0, markdown="# Page 0")),
+        ("doc1", "doc1.pdf", PageResult(page_index=1, markdown="# Page 1")),
+    ]
+    save_batch_checkpoint(batch_results, tmp_path, batch_index=0)
+
+    checkpoint_dir = tmp_path / CHECKPOINT_DIR_NAME
+    assert checkpoint_dir.is_dir()
+    files = list(checkpoint_dir.glob("batch_*.json"))
+    assert len(files) == 1
+    assert files[0].name == "batch_00000.json"
+
+
+def test_load_checkpoints(tmp_path):
+    batch_results = [
+        ("doc1", "doc1.pdf", PageResult(page_index=0, markdown="# Page 0")),
+        ("doc1", "doc1.pdf", PageResult(page_index=1, markdown="# Page 1")),
+    ]
+    save_batch_checkpoint(batch_results, tmp_path, batch_index=0)
+
+    batch_results_2 = [
+        ("doc2", "doc2.pdf", PageResult(page_index=0, markdown="# Doc2 Page 0")),
+    ]
+    save_batch_checkpoint(batch_results_2, tmp_path, batch_index=1)
+
+    loaded = load_checkpoints(tmp_path)
+    assert len(loaded) == 3
+    assert loaded[0] == ("doc1", "doc1.pdf", PageResult(page_index=0, markdown="# Page 0"))
+    assert loaded[1] == ("doc1", "doc1.pdf", PageResult(page_index=1, markdown="# Page 1"))
+    assert loaded[2] == ("doc2", "doc2.pdf", PageResult(page_index=0, markdown="# Doc2 Page 0"))
+
+
+def test_load_checkpoints_empty(tmp_path):
+    loaded = load_checkpoints(tmp_path)
+    assert loaded == []
+
+
+def test_clear_checkpoints(tmp_path):
+    batch_results = [
+        ("doc1", "doc1.pdf", PageResult(page_index=0, markdown="data")),
+    ]
+    save_batch_checkpoint(batch_results, tmp_path, batch_index=0)
+    assert (tmp_path / CHECKPOINT_DIR_NAME).is_dir()
+
+    clear_checkpoints(tmp_path)
+    assert not (tmp_path / CHECKPOINT_DIR_NAME).exists()
+
+
+def test_clear_checkpoints_noop_when_absent(tmp_path):
+    # Should not raise
+    clear_checkpoints(tmp_path)

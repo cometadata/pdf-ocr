@@ -5,6 +5,7 @@ from pdf_ocr.convert import ConversionResult, PageResult
 
 import logging
 import os
+from pathlib import Path
 from typing import List, Optional
 
 LOGGER = logging.getLogger(__name__)
@@ -55,7 +56,6 @@ def convert(
     effective_batch_size = batch_size or config.inference.batch_size
     hf_token = token or os.environ.get("HF_TOKEN")
 
-    # Server lifecycle
     server_process = None
     if base_url is None:
         base_url = f"http://127.0.0.1:{port}"
@@ -65,22 +65,37 @@ def convert(
             shutdown_server(server_process)
             raise RuntimeError("vLLM server did not become ready in time")
 
+    checkpoint_dir = None
+    is_local_output = False
+    if output and not ("/" in output and not output.startswith(".") and not output.startswith("/")):
+        is_local_output = True
+        checkpoint_dir = Path(output)
+
     try:
         client = VLLMClient(base_url=base_url, config=config)
         pages = load_pdfs(source, config, pdf_column=pdf_column, split=split, token=hf_token)
-        results = convert_pages(pages, client, batch_size=effective_batch_size, max_pages=max_pages)
+        results = convert_pages(
+            pages,
+            client,
+            batch_size=effective_batch_size,
+            max_pages=max_pages,
+            checkpoint_dir=checkpoint_dir,
+            resume_from_checkpoint=checkpoint_dir is not None,
+        )
     finally:
         if server_process is not None:
             shutdown_server(server_process)
 
-    # Output handling
     if output:
-        if "/" in output and not output.startswith(".") and not output.startswith("/"):
-            # Looks like an HF repo ID
+        if not is_local_output:
             from .storage import push_to_hub
             push_to_hub(results, repo_id=output, private=private, token=hf_token)
         else:
             from .storage import save_local
             save_local(results, output)
+
+    if checkpoint_dir is not None:
+        from .storage import clear_checkpoints
+        clear_checkpoints(checkpoint_dir)
 
     return results

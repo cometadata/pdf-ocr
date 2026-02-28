@@ -5,6 +5,7 @@ vllm_args:
   limit-mm-per-prompt: '{"image": 1}'
   mm-processor-cache-gb: 0
   no-enable-prefix-caching: true
+  enable-chunked-prefill: true
   max-model-len: 4096
   gpu-memory-utilization: 0.90
   trust-remote-code: true

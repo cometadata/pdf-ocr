@@ -24,6 +24,7 @@ class InferenceConfig:
     request_timeout: int = 120
     max_retries: int = 3
     retry_backoff: float = 2.0
+    extra_body: Dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -85,19 +86,16 @@ def _list_bundled_configs() -> Dict[str, Path]:
 
 
 def load_config(model: str) -> ModelConfig:
-    # 1. Direct YAML path
     path = Path(model)
     if path.suffix in {".yaml", ".yml"} and path.is_file():
         with open(path) as f:
             return _parse_yaml(yaml.safe_load(f))
 
-    # 2. Bundled config by name
     bundled = _list_bundled_configs()
     if model in bundled:
         with open(bundled[model]) as f:
             return _parse_yaml(yaml.safe_load(f))
 
-    # 3. Bundled config by model_id
     for name, config_path in bundled.items():
         with open(config_path) as f:
             data = yaml.safe_load(f)

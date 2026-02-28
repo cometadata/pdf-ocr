@@ -53,3 +53,34 @@ def test_config_with_overrides():
     assert config.inference.batch_size == 16
     assert config.inference.max_tokens == 8192
     assert config.inference.temperature == 0.2
+
+
+def test_extra_body_default_empty():
+    config = load_config("lighton_ocr_2_1b")
+    assert config.inference.extra_body == {}
+
+
+def test_extra_body_from_yaml(tmp_path):
+    yaml_content = """
+model_id: custom/MyModel
+served_model_name: my-model
+inference:
+  max_tokens: 2048
+  extra_body:
+    skip_special_tokens: false
+    vllm_xargs:
+      ngram_size: 30
+"""
+    config_path = tmp_path / "custom.yaml"
+    config_path.write_text(yaml_content)
+
+    config = load_config(str(config_path))
+    assert config.inference.extra_body == {
+        "skip_special_tokens": False,
+        "vllm_xargs": {"ngram_size": 30},
+    }
+
+
+def test_chunked_prefill_in_bundled_config():
+    config = load_config("lighton_ocr_2_1b")
+    assert config.vllm_args.get("enable-chunked-prefill") is True
