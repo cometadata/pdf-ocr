@@ -1,7 +1,8 @@
 # /// script
 # requires-python = ">=3.11"
 # dependencies = [
-#     "huggingface-hub[hf_transfer,hf_xet]",
+#     "pdf-ocr @ git+https://github.com/cometadata/pdf-ocr.git",
+#     "huggingface-hub",
 #     "datasets>=4.0.0",
 #     "pyarrow>=12.0.0",
 #     "pillow",
@@ -15,7 +16,7 @@
 """
 Entrypoint for HuggingFace Jobs.
 
-Downloads the pdf_ocr package from a HF repo and runs the conversion pipeline.
+Installs pdf_ocr from GitHub and runs the conversion pipeline.
 All configuration is via environment variables.
 """
 
@@ -30,7 +31,12 @@ LOGGER = logging.getLogger(__name__)
 
 
 def ensure_code_checkout() -> Path:
-    """Download job code from HF Hub if JOB_CODE_REPO is set."""
+    """Download supplementary job code from HF Hub if JOB_CODE_REPO is set.
+
+    The primary pdf_ocr package is installed from GitHub via PEP 723
+    dependencies. This function is only needed if extra code is hosted
+    in a HF repo.
+    """
     repo_id = os.environ.get("JOB_CODE_REPO")
     if not repo_id:
         return Path(".")
@@ -47,7 +53,6 @@ def ensure_code_checkout() -> Path:
         repo_type=repo_type,
         revision=revision,
         local_dir=str(local_dir),
-        local_dir_use_symlinks=False,
     )
     return local_dir
 
