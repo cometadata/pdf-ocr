@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from typing import List
+from typing import Any, Dict, List
 
 LOGGER = logging.getLogger(__name__)
 
@@ -39,3 +39,30 @@ def detect_gpus() -> List[GPUInfo]:
     except Exception:
         LOGGER.debug("GPU detection failed", exc_info=True)
         return []
+
+
+def recommend_engine_kwargs(gpus: List[GPUInfo]) -> Dict[str, Any]:
+    """Recommend vLLM engine kwargs based on detected GPU hardware.
+
+    Returns a dict of kwargs that should be used as defaults (user YAML
+    config takes precedence over these).
+    """
+    if not gpus:
+        return {}
+
+    vram_mb = gpus[0].vram_mb
+
+    if vram_mb >= 65536:  # 64 GB+
+        max_num_batched_tokens = 16384
+        gpu_memory_utilization = 0.90
+    elif vram_mb >= 30720:  # 30 GB+
+        max_num_batched_tokens = 8192
+        gpu_memory_utilization = 0.90
+    else:
+        max_num_batched_tokens = 4096
+        gpu_memory_utilization = 0.85
+
+    return {
+        "max_num_batched_tokens": max_num_batched_tokens,
+        "gpu_memory_utilization": gpu_memory_utilization,
+    }

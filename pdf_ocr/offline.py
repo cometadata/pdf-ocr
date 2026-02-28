@@ -45,10 +45,14 @@ def _coerce_value(value: Any) -> Any:
     return value
 
 
-def build_engine_kwargs(config: ModelConfig) -> Dict[str, Any]:
+def build_engine_kwargs(config: ModelConfig, auto_kwargs: Dict[str, Any] | None = None) -> Dict[str, Any]:
     kwargs: Dict[str, Any] = {
         "model": config.model_id,
     }
+
+    # Apply auto-detected defaults first (lowest priority)
+    if auto_kwargs:
+        kwargs.update(auto_kwargs)
 
     for flag, value in config.vllm_args.items():
         if flag in _SERVER_ONLY_ARGS:
@@ -86,7 +90,14 @@ class VLLMOfflineEngine:
                 "it will be ignored for offline inference"
             )
 
-        engine_kwargs = build_engine_kwargs(config)
+        from .gpu import detect_gpus, recommend_engine_kwargs
+
+        gpus = detect_gpus()
+        auto_kwargs = recommend_engine_kwargs(gpus)
+        if auto_kwargs:
+            LOGGER.info("Auto-detected GPU config: %s", auto_kwargs)
+
+        engine_kwargs = build_engine_kwargs(config, auto_kwargs=auto_kwargs)
         LOGGER.info("Initializing offline vLLM engine: %s", engine_kwargs)
         t0 = time.monotonic()
         self._llm = LLM(**engine_kwargs)

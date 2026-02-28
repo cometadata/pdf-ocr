@@ -2,7 +2,7 @@
 import pytest
 from unittest.mock import patch, MagicMock
 
-from pdf_ocr.gpu import detect_gpus, GPUInfo
+from pdf_ocr.gpu import detect_gpus, GPUInfo, recommend_engine_kwargs
 
 
 class TestDetectGpus:
@@ -39,3 +39,35 @@ class TestDetectGpus:
         mock_torch.cuda.is_available.side_effect = RuntimeError("no CUDA")
         result = detect_gpus()
         assert result == []
+
+
+class TestRecommendEngineKwargs:
+    def test_small_gpu_24gb(self):
+        gpus = [GPUInfo(index=0, name="L4", vram_mb=24576)]
+        kwargs = recommend_engine_kwargs(gpus)
+        assert kwargs["max_num_batched_tokens"] == 4096
+        assert kwargs["gpu_memory_utilization"] == 0.85
+
+    def test_medium_gpu_48gb(self):
+        gpus = [GPUInfo(index=0, name="A40", vram_mb=49152)]
+        kwargs = recommend_engine_kwargs(gpus)
+        assert kwargs["max_num_batched_tokens"] == 8192
+        assert kwargs["gpu_memory_utilization"] == 0.90
+
+    def test_large_gpu_80gb(self):
+        gpus = [GPUInfo(index=0, name="A100", vram_mb=81920)]
+        kwargs = recommend_engine_kwargs(gpus)
+        assert kwargs["max_num_batched_tokens"] == 16384
+        assert kwargs["gpu_memory_utilization"] == 0.90
+
+    def test_no_gpus_returns_empty(self):
+        kwargs = recommend_engine_kwargs([])
+        assert kwargs == {}
+
+    def test_multi_gpu_uses_first_gpu_vram(self):
+        gpus = [
+            GPUInfo(index=0, name="A100", vram_mb=81920),
+            GPUInfo(index=1, name="A100", vram_mb=81920),
+        ]
+        kwargs = recommend_engine_kwargs(gpus)
+        assert kwargs["max_num_batched_tokens"] == 16384

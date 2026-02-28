@@ -121,6 +121,40 @@ class TestBuildEngineKwargs:
         assert "max_num_batched_tokens" not in kwargs
 
 
+class TestBuildEngineKwargsAutoDefaults:
+    def _make_config(self, vllm_args=None):
+        return ModelConfig(
+            model_id="test/model",
+            served_model_name="test-model",
+            vllm_args=vllm_args or {},
+        )
+
+    def test_auto_kwargs_applied_when_no_yaml_override(self):
+        config = self._make_config({"trust-remote-code": True})
+        auto = {"max_num_batched_tokens": 8192, "gpu_memory_utilization": 0.90}
+        kwargs = build_engine_kwargs(config, auto_kwargs=auto)
+        assert kwargs["max_num_batched_tokens"] == 8192
+        assert kwargs["gpu_memory_utilization"] == 0.90
+        assert kwargs["trust_remote_code"] is True
+
+    def test_yaml_overrides_auto_kwargs(self):
+        config = self._make_config({
+            "gpu-memory-utilization": 0.85,
+            "trust-remote-code": True,
+        })
+        auto = {"max_num_batched_tokens": 8192, "gpu_memory_utilization": 0.90}
+        kwargs = build_engine_kwargs(config, auto_kwargs=auto)
+        # YAML wins over auto
+        assert kwargs["gpu_memory_utilization"] == 0.85
+        # Auto still applies where no YAML override
+        assert kwargs["max_num_batched_tokens"] == 8192
+
+    def test_no_auto_kwargs_same_as_before(self):
+        config = self._make_config({"trust-remote-code": True})
+        kwargs = build_engine_kwargs(config)
+        assert kwargs == {"model": "test/model", "trust_remote_code": True}
+
+
 class TestVLLMOfflineEngine:
     @patch("pdf_ocr.offline.LLM", create=True)
     @patch("pdf_ocr.offline.SamplingParams", create=True)
