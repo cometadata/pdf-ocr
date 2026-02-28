@@ -82,12 +82,14 @@ def main() -> None:
     batch_size = int(os.environ["BATCH_SIZE"]) if os.environ.get("BATCH_SIZE") else None
     max_pages = int(os.environ["MAX_PAGES"]) if os.environ.get("MAX_PAGES") else None
     port = int(os.environ.get("PORT", "8000"))
+    backend = os.environ.get("BACKEND")
 
-    LOGGER.info("Starting pdf_ocr job: source=%s model=%s", source, model_config)
+    LOGGER.info("Starting pdf_ocr job: source=%s model=%s backend=%s", source, model_config, backend)
 
     results = convert(
         source=source,
         model=model_config,
+        backend=backend,
         batch_size=batch_size,
         max_pages=max_pages,
         token=hf_token,

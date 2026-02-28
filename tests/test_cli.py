@@ -18,6 +18,7 @@ def test_parser_defaults():
     assert args.hf_repo is None
     assert args.private is False
     assert args.base_url is None
+    assert args.backend is None
     assert args.max_pages is None
     assert args.batch_size is None
 
@@ -44,3 +45,21 @@ def test_parser_all_options():
     assert args.max_pages == 10
     assert args.batch_size == 8
     assert args.pdf_column == "content"
+
+
+def test_parser_backend_offline():
+    parser = build_parser()
+    args = parser.parse_args(["test.pdf", "--backend", "offline"])
+    assert args.backend == "offline"
+
+
+def test_parser_backend_server():
+    parser = build_parser()
+    args = parser.parse_args(["test.pdf", "--backend", "server"])
+    assert args.backend == "server"
+
+
+def test_parser_backend_invalid():
+    parser = build_parser()
+    with pytest.raises(SystemExit):
+        parser.parse_args(["test.pdf", "--backend", "invalid"])

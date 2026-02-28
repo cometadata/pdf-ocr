@@ -1,5 +1,3 @@
-"""Core conversion pipeline: PDF pages to markdown via vLLM."""
-
 from __future__ import annotations
 
 import logging
@@ -7,10 +5,16 @@ import time
 from collections import OrderedDict
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterator, List, Optional, Sequence, Tuple
+from typing import TYPE_CHECKING, Iterator, List, Optional, Protocol, Sequence, Tuple
 
 from .pdf_input import PageImage
-from .server import VLLMClient
+
+if TYPE_CHECKING:
+    from PIL import Image
+
+
+class InferenceEngine(Protocol):
+    def infer_batch(self, images: Sequence["Image.Image"]) -> List[str]: ...
 
 LOGGER = logging.getLogger(__name__)
 
@@ -54,13 +58,12 @@ def _group_by_document(
 
 def convert_pages(
     pages: Iterator[PageImage],
-    client: VLLMClient,
+    client: InferenceEngine,
     batch_size: int = 4,
     max_pages: int | None = None,
     checkpoint_dir: Optional[Path] = None,
     resume_from_checkpoint: bool = False,
 ) -> List[ConversionResult]:
-    """Convert page images to markdown via vLLM."""
     from .storage import load_checkpoints, save_batch_checkpoint
 
     start = time.time()

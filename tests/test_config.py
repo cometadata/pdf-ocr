@@ -84,3 +84,27 @@ inference:
 def test_chunked_prefill_in_bundled_config():
     config = load_config("lighton_ocr_2_1b")
     assert config.vllm_args.get("enable-chunked-prefill") is True
+
+
+def test_backend_default_server():
+    config = load_config("lighton_ocr_2_1b")
+    assert config.backend == "server"
+
+
+def test_backend_from_yaml(tmp_path):
+    yaml_content = """
+model_id: custom/MyModel
+served_model_name: my-model
+backend: offline
+"""
+    config_path = tmp_path / "custom.yaml"
+    config_path.write_text(yaml_content)
+
+    config = load_config(str(config_path))
+    assert config.backend == "offline"
+
+
+def test_backend_with_overrides():
+    config = load_config("lighton_ocr_2_1b")
+    config = config.with_overrides(backend="offline")
+    assert config.backend == "offline"

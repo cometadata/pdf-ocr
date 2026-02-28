@@ -37,6 +37,7 @@ class PdfRenderingConfig:
 class ModelConfig:
     model_id: str
     served_model_name: str
+    backend: str = "server"
     vllm_args: Dict[str, Any] = field(default_factory=dict)
     inference: InferenceConfig = field(default_factory=InferenceConfig)
     pdf_rendering: PdfRenderingConfig = field(default_factory=PdfRenderingConfig)
@@ -71,6 +72,7 @@ def _parse_yaml(raw: Dict[str, Any]) -> ModelConfig:
     return ModelConfig(
         model_id=raw["model_id"],
         served_model_name=raw.get("served_model_name", raw["model_id"].split("/")[-1]),
+        backend=raw.get("backend", "server"),
         vllm_args=raw.get("vllm_args", {}),
         inference=InferenceConfig(**{k: v for k, v in inference_data.items() if k in InferenceConfig.__dataclass_fields__}),
         pdf_rendering=PdfRenderingConfig(**{k: v for k, v in pdf_data.items() if k in PdfRenderingConfig.__dataclass_fields__}),

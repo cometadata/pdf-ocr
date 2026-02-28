@@ -17,6 +17,9 @@ dependencies = [
     "pyyaml",
 ]
 
+[project.optional-dependencies]
+offline = ["vllm>=0.6.0"]
+
 [project.scripts]
 pdf_ocr = "pdf_ocr.cli:main"
 

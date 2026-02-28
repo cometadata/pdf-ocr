@@ -59,3 +59,29 @@ def test_convert_with_base_url_skips_server_launch(tmp_path):
                           base_url="http://localhost:8000")
 
         mock_launch.assert_not_called()
+
+
+def test_convert_offline_backend_creates_offline_engine(tmp_path):
+    fake_pdf = tmp_path / "test.pdf"
+    fake_pdf.write_bytes(b"%PDF-1.4 fake")
+
+    fake_pages = [
+        PageImage(doc_id="test", source=str(fake_pdf), page_index=0,
+                  image=Image.new("RGB", (100, 100))),
+    ]
+
+    with patch("pdf_ocr.convert.convert_pages") as mock_convert, \
+         patch("pdf_ocr.pdf_input.load_pdfs", return_value=iter(fake_pages)), \
+         patch("pdf_ocr.offline.VLLMOfflineEngine") as MockOffline:
+
+        from pdf_ocr.convert import ConversionResult, PageResult
+        mock_convert.return_value = [
+            ConversionResult(doc_id="test", source=str(fake_pdf),
+                             pages=[PageResult(page_index=0, markdown="# Hello")])
+        ]
+
+        results = convert(str(fake_pdf), model="lighton_ocr_2_1b",
+                          backend="offline")
+
+        MockOffline.assert_called_once()
+        assert len(results) == 1

@@ -40,6 +40,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="URL of existing vLLM server (skips server launch)",
     )
     parser.add_argument(
+        "--backend", default=None,
+        choices=["server", "offline"],
+        help="Inference backend: 'server' (default) or 'offline' (vLLM LLM class)",
+    )
+    parser.add_argument(
         "--max-pages", type=int, default=None,
         help="Limit total pages processed",
     )
@@ -83,6 +88,7 @@ def main(argv: list[str] | None = None) -> None:
         model=args.model,
         output=args.output,
         base_url=args.base_url,
+        backend=args.backend,
         batch_size=args.batch_size,
         max_pages=args.max_pages,
         pdf_column=args.pdf_column,
@@ -91,7 +97,6 @@ def main(argv: list[str] | None = None) -> None:
         token=os.environ.get("HF_TOKEN"),
     )
 
-    # Push to HF if requested
     if args.hf_repo:
         from pdf_ocr.storage import push_to_hub
         push_to_hub(
@@ -101,7 +106,6 @@ def main(argv: list[str] | None = None) -> None:
             token=os.environ.get("HF_TOKEN"),
         )
 
-    # If no output specified and no hf-repo, print to stdout
     if args.output is None and args.hf_repo is None:
         for result in results:
             for page in result.pages:
