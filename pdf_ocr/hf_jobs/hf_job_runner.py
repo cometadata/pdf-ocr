@@ -105,8 +105,8 @@ def main() -> None:
         effective_batch_size = config.inference.batch_size
 
     if effective_backend == "offline":
-        from pdf_ocr.offline import VLLMOfflineEngine
-        client = VLLMOfflineEngine(config)
+        from pdf_ocr.engine_factory import create_offline_engine
+        client = create_offline_engine(config)
     else:
         from pdf_ocr.server import VLLMClient, launch_vllm, shutdown_server, wait_for_server
         base_url = f"http://127.0.0.1:{port}"

@@ -53,8 +53,8 @@ def convert(
     server_process = None
 
     if effective_backend == "offline":
-        from .offline import VLLMOfflineEngine
-        client = VLLMOfflineEngine(config)
+        from .engine_factory import create_offline_engine
+        client = create_offline_engine(config)
     else:
         from .server import VLLMClient, launch_vllm, shutdown_server, wait_for_server
         if base_url is None:
