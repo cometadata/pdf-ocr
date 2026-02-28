@@ -9,6 +9,14 @@ from pdf_ocr.offline import (
     VLLMOfflineEngine,
 )
 
+# Force-import gpu module (and transitively torch) at module level so that
+# subsequent sys.modules patches inside tests don't trigger a partial torch
+# re-import which fails with a docstring RuntimeError.
+try:
+    import pdf_ocr.gpu  # noqa: F401
+except Exception:
+    pass
+
 
 class TestCliFlagToKwarg:
     def test_simple_dash(self):
@@ -302,3 +310,101 @@ class TestVLLMOfflineEngine:
             served_model_name="test-model",
         )
         assert config.inference.max_encode_workers == 8
+
+
+class TestAsyncPipeline:
+    @patch.dict("sys.modules", {"vllm": MagicMock()})
+    def test_infer_batch_still_returns_correct_results(self):
+        """Pipeline refactor must not change the return values."""
+        from PIL import Image
+        import sys
+
+        mock_vllm = sys.modules["vllm"]
+        mock_llm_instance = MagicMock()
+        mock_vllm.LLM.return_value = mock_llm_instance
+
+        mock_outputs = [
+            MagicMock(outputs=[MagicMock(text="# Page 0")]),
+            MagicMock(outputs=[MagicMock(text="# Page 1")]),
+        ]
+        mock_llm_instance.chat.return_value = mock_outputs
+
+        config = ModelConfig(
+            model_id="test/model",
+            served_model_name="test-model",
+            vllm_args={"trust-remote-code": True},
+        )
+        engine = VLLMOfflineEngine(config)
+
+        images = [Image.new("RGB", (100, 100)) for _ in range(2)]
+        results = engine.infer_batch(images)
+
+        assert results == ["# Page 0", "# Page 1"]
+
+    @patch.dict("sys.modules", {"vllm": MagicMock()})
+    def test_infer_batch_encodes_as_jpeg_base64(self):
+        """Images must still be encoded as JPEG base64 data URIs."""
+        from PIL import Image
+        import sys
+
+        mock_vllm = sys.modules["vllm"]
+        mock_llm_instance = MagicMock()
+        mock_vllm.LLM.return_value = mock_llm_instance
+
+        mock_output = MagicMock(outputs=[MagicMock(text="result")])
+        mock_llm_instance.chat.return_value = [mock_output]
+
+        config = ModelConfig(
+            model_id="test/model",
+            served_model_name="test-model",
+        )
+        engine = VLLMOfflineEngine(config)
+
+        img = Image.new("RGB", (100, 100))
+        engine.infer_batch([img])
+
+        call_args = mock_llm_instance.chat.call_args
+        messages_list = call_args[1].get("messages") or call_args[0][0]
+        url = messages_list[0][0]["content"][0]["image_url"]["url"]
+        assert url.startswith("data:image/jpeg;base64,")
+
+    @patch.dict("sys.modules", {"vllm": MagicMock()})
+    def test_multiple_batches_all_succeed(self):
+        """Calling infer_batch multiple times must work correctly."""
+        from PIL import Image
+        import sys
+
+        mock_vllm = sys.modules["vllm"]
+        mock_llm_instance = MagicMock()
+        mock_vllm.LLM.return_value = mock_llm_instance
+
+        config = ModelConfig(
+            model_id="test/model",
+            served_model_name="test-model",
+        )
+        engine = VLLMOfflineEngine(config)
+
+        for batch_idx in range(3):
+            mock_llm_instance.chat.return_value = [
+                MagicMock(outputs=[MagicMock(text=f"result_{batch_idx}")])
+            ]
+            images = [Image.new("RGB", (50, 50))]
+            results = engine.infer_batch(images)
+            assert results == [f"result_{batch_idx}"]
+
+    @patch.dict("sys.modules", {"vllm": MagicMock()})
+    def test_infer_batch_empty_still_works(self):
+        """Empty batch must return empty list without touching GPU."""
+        import sys
+
+        mock_vllm = sys.modules["vllm"]
+        mock_llm_instance = MagicMock()
+        mock_vllm.LLM.return_value = mock_llm_instance
+
+        config = ModelConfig(
+            model_id="test/model",
+            served_model_name="test-model",
+        )
+        engine = VLLMOfflineEngine(config)
+        assert engine.infer_batch([]) == []
+        mock_llm_instance.chat.assert_not_called()

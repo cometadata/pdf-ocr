@@ -128,12 +128,25 @@ def convert_pages_streaming(
             page_count += 1
             yield page
 
-    for batch in _batch_pages(limited_pages(), batch_size):
+    batches_iter = _batch_pages(limited_pages(), batch_size)
+    # Peek-ahead for pipeline overlap
+    current_batch = next(batches_iter, None)
+
+    while current_batch is not None:
+        batch = current_batch
+        current_batch = next(batches_iter, None)  # peek next
+
         batch_count += 1
         batch_start = time.time()
 
         LOGGER.info("Processing batch %d (%d pages)", batch_count, len(batch))
         markdowns = _infer_with_retry(client, batch, max_depth=max_retry_depth)
+
+        # Kick off pre-encoding of next batch while we process results
+        if current_batch is not None:
+            prep = getattr(client, "start_next_prep", None)
+            if prep is not None:
+                prep([p.image for p in current_batch])
 
         batch_results: List[Tuple[str, str, PageResult]] = []
         for page, md in zip(batch, markdowns):

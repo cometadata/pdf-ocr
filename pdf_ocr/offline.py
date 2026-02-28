@@ -3,6 +3,8 @@ from __future__ import annotations
 import base64
 import json
 import logging
+import queue
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 from io import BytesIO
@@ -108,20 +110,61 @@ class VLLMOfflineEngine:
             top_p=config.inference.top_p,
         )
 
-    def infer_batch(self, images: Sequence["Image.Image"]) -> List[str]:
-        if not images:
-            return []
+        # Pipeline state: pre-encoded messages from a background thread
+        self._prep_result: queue.Queue[list | None] = queue.Queue(maxsize=1)
+        self._prep_thread: threading.Thread | None = None
 
-        t0 = time.monotonic()
+    # ------------------------------------------------------------------
+    # Image encoding helpers
+    # ------------------------------------------------------------------
 
-        def _encode_to_message(image: "Image.Image") -> list:
+    def _encode_images(self, images: Sequence["Image.Image"]) -> list:
+        """Encode a sequence of PIL images to vLLM chat messages (CPU-bound)."""
+        def _encode_one(image: "Image.Image") -> list:
             b64 = encode_image(image)
             return [{"role": "user", "content": [
                 {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{b64}"}},
             ]}]
 
         with ThreadPoolExecutor(max_workers=self.config.inference.max_encode_workers) as pool:
-            messages_list = list(pool.map(_encode_to_message, images))
+            return list(pool.map(_encode_one, images))
+
+    def _start_prep(self, images: Sequence["Image.Image"]) -> None:
+        """Start encoding the next batch in a background thread."""
+        def _worker():
+            try:
+                result = self._encode_images(images)
+                self._prep_result.put(result)
+            except Exception:
+                LOGGER.exception("Background image encoding failed")
+                self._prep_result.put(None)
+
+        self._prep_thread = threading.Thread(target=_worker, daemon=True)
+        self._prep_thread.start()
+
+    # ------------------------------------------------------------------
+    # Public API
+    # ------------------------------------------------------------------
+
+    def infer_batch(self, images: Sequence["Image.Image"]) -> List[str]:
+        if not images:
+            return []
+
+        t0 = time.monotonic()
+
+        # Check if we have pre-encoded messages from a prior _start_prep call
+        if self._prep_thread is not None:
+            self._prep_thread.join()
+            self._prep_thread = None
+            pre_encoded = self._prep_result.get_nowait()
+        else:
+            pre_encoded = None
+
+        if pre_encoded is not None and len(pre_encoded) == len(images):
+            messages_list = pre_encoded
+        else:
+            # No valid pre-encoded batch (first call, or size mismatch) — encode now
+            messages_list = self._encode_images(images)
 
         t_prep = time.monotonic()
 
@@ -142,3 +185,11 @@ class VLLMOfflineEngine:
             len(images) / (t_infer - t0),
         )
         return results
+
+    def start_next_prep(self, images: Sequence["Image.Image"]) -> None:
+        """Pre-encode the next batch while current inference results are being processed.
+
+        Called by the orchestration layer (convert_pages_streaming) after
+        infer_batch returns but before the next batch's images are needed.
+        """
+        self._start_prep(images)
