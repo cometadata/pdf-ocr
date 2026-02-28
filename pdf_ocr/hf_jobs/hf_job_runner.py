@@ -2,7 +2,6 @@
 # requires-python = ">=3.11"
 # dependencies = [
 #     "pdf-ocr @ https://github.com/cometadata/pdf-ocr/archive/main.tar.gz",
-#     "vllm>=0.16.0",
 #     "huggingface-hub",
 #     "datasets>=4.0.0",
 #     "pyarrow>=12.0.0",
@@ -25,8 +24,14 @@ from __future__ import annotations
 
 import logging
 import os
+import site
 import sys
 from pathlib import Path
+
+# Make system site-packages visible so vllm from the docker image is importable
+for _sp in site.getsitepackages():
+    if _sp not in sys.path:
+        sys.path.insert(0, _sp)
 
 LOGGER = logging.getLogger(__name__)
 
