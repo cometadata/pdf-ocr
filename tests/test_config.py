@@ -8,7 +8,7 @@ def test_load_bundled_config_by_name():
     config = load_config("lighton_ocr_2_1b")
     assert config.model_id == "lightonai/LightOnOCR-2-1B"
     assert config.served_model_name == "lighton-ocr"
-    assert config.inference.max_tokens == 4096
+    assert config.inference.max_tokens == 4000
     assert config.inference.temperature == 0.2
     assert config.pdf_rendering.dpi == 200
     assert config.pdf_rendering.max_dimension == 1540

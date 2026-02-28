@@ -16,7 +16,7 @@ MODELS_DIR = Path(__file__).parent / "models"
 
 @dataclass(frozen=True)
 class InferenceConfig:
-    max_tokens: int = 4096
+    max_tokens: int = 4000
     temperature: float = 0.2
     top_p: float = 0.9
     batch_size: int = 4
