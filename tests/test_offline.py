@@ -108,7 +108,6 @@ class TestBuildEngineKwargs:
         assert kwargs["enable_prefix_caching"] is True
 
     def test_full_lighton_config(self):
-        """Mirrors the current lighton_ocr_2_1b.yaml after optimization."""
         config = self._make_config({
             "limit-mm-per-prompt": '{"image": 1}',
             "no-enable-prefix-caching": True,
@@ -153,9 +152,7 @@ class TestBuildEngineKwargsAutoDefaults:
         })
         auto = {"max_num_batched_tokens": 8192, "gpu_memory_utilization": 0.90}
         kwargs = build_engine_kwargs(config, auto_kwargs=auto)
-        # YAML wins over auto
         assert kwargs["gpu_memory_utilization"] == 0.85
-        # Auto still applies where no YAML override
         assert kwargs["max_num_batched_tokens"] == 8192
 
     def test_no_auto_kwargs_same_as_before(self):
@@ -266,7 +263,6 @@ class TestVLLMOfflineEngine:
 
     @patch.dict("sys.modules", {"vllm": MagicMock()})
     def test_thread_pool_uses_max_encode_workers(self):
-        """ThreadPoolExecutor should receive max_workers from config."""
         from PIL import Image
         import sys
 
@@ -300,7 +296,6 @@ class TestVLLMOfflineEngine:
 
     @patch.dict("sys.modules", {"vllm": MagicMock()})
     def test_default_max_encode_workers_is_8(self):
-        """Default config should use max_encode_workers=8."""
         import sys
 
         mock_vllm = sys.modules["vllm"]
@@ -316,7 +311,6 @@ class TestVLLMOfflineEngine:
 class TestAsyncPipeline:
     @patch.dict("sys.modules", {"vllm": MagicMock()})
     def test_infer_batch_still_returns_correct_results(self):
-        """Pipeline refactor must not change the return values."""
         from PIL import Image
         import sys
 
@@ -371,7 +365,6 @@ class TestAsyncPipeline:
 
     @patch.dict("sys.modules", {"vllm": MagicMock()})
     def test_multiple_batches_all_succeed(self):
-        """Calling infer_batch multiple times must work correctly."""
         from PIL import Image
         import sys
 
@@ -395,7 +388,6 @@ class TestAsyncPipeline:
 
     @patch.dict("sys.modules", {"vllm": MagicMock()})
     def test_infer_batch_empty_still_works(self):
-        """Empty batch must return empty list without touching GPU."""
         import sys
 
         mock_vllm = sys.modules["vllm"]
@@ -415,7 +407,6 @@ class TestFactoryIntegration:
     @patch("pdf_ocr.engine_factory.detect_gpus")
     @patch("pdf_ocr.engine_factory.VLLMOfflineEngine")
     def test_init_module_uses_factory(self, MockEngine, mock_detect):
-        """pdf_ocr.convert() with backend='offline' should use create_offline_engine."""
         mock_detect.return_value = [GPUInfo(index=0, name="L4", vram_mb=24576)]
         mock_instance = MagicMock()
         mock_instance.infer_batch.return_value = ["# result"]

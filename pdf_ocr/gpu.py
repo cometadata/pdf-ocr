@@ -1,6 +1,3 @@
-# pdf_ocr/gpu.py
-"""GPU detection and vLLM parameter tuning."""
-
 from __future__ import annotations
 
 import logging
@@ -23,7 +20,6 @@ class GPUInfo:
 
 
 def detect_gpus() -> List[GPUInfo]:
-    """Detect available CUDA GPUs and their VRAM."""
     try:
         if torch is None or not torch.cuda.is_available():
             return []
@@ -42,11 +38,7 @@ def detect_gpus() -> List[GPUInfo]:
 
 
 def recommend_engine_kwargs(gpus: List[GPUInfo]) -> Dict[str, Any]:
-    """Recommend vLLM engine kwargs based on detected GPU hardware.
-
-    Returns a dict of kwargs that should be used as defaults (user YAML
-    config takes precedence over these).
-    """
+    """Return default vLLM engine kwargs; user YAML config takes precedence."""
     if not gpus:
         return {}
 

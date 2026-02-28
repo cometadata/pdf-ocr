@@ -1,4 +1,3 @@
-# tests/test_parallel.py
 import pytest
 from unittest.mock import MagicMock, patch, call
 from PIL import Image
@@ -8,7 +7,6 @@ from pdf_ocr.parallel import DataParallelEngine
 
 class TestDataParallelEngine:
     def test_round_robin_distribution(self):
-        """Batches should be distributed round-robin across replicas."""
         replica_0 = MagicMock()
         replica_1 = MagicMock()
         replica_0.infer_batch.return_value = ["r0_page0", "r0_page1"]
@@ -30,7 +28,6 @@ class TestDataParallelEngine:
         replica_1.infer_batch.assert_called_once()
 
     def test_wraps_around(self):
-        """After using all replicas, should wrap back to first."""
         replicas = [MagicMock() for _ in range(2)]
         for r in replicas:
             r.infer_batch.return_value = ["result"]
@@ -47,7 +44,6 @@ class TestDataParallelEngine:
         assert replicas[1].infer_batch.call_count == 1
 
     def test_empty_batch(self):
-        """Empty batch should return empty without touching replicas."""
         replica = MagicMock()
 
         engine = DataParallelEngine.__new__(DataParallelEngine)
@@ -58,7 +54,6 @@ class TestDataParallelEngine:
         replica.infer_batch.assert_not_called()
 
     def test_conforms_to_inference_engine_protocol(self):
-        """DataParallelEngine must implement infer_batch(images) -> List[str]."""
         from pdf_ocr.convert import InferenceEngine
         engine = DataParallelEngine.__new__(DataParallelEngine)
         engine._replicas = [MagicMock()]

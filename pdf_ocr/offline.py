@@ -73,7 +73,6 @@ def build_engine_kwargs(config: ModelConfig, auto_kwargs: Dict[str, Any] | None 
 
 
 def encode_image(image: "Image.Image") -> str:
-    """Encode a PIL image to a base64 JPEG string for offline inference."""
     buffer = BytesIO()
     image.save(buffer, format="JPEG", quality=95)
     return base64.b64encode(buffer.getvalue()).decode("utf-8")
@@ -110,16 +109,10 @@ class VLLMOfflineEngine:
             top_p=config.inference.top_p,
         )
 
-        # Pipeline state: pre-encoded messages from a background thread
         self._prep_result: queue.Queue[list | None] = queue.Queue(maxsize=1)
         self._prep_thread: threading.Thread | None = None
 
-    # ------------------------------------------------------------------
-    # Image encoding helpers
-    # ------------------------------------------------------------------
-
     def _encode_images(self, images: Sequence["Image.Image"]) -> list:
-        """Encode a sequence of PIL images to vLLM chat messages (CPU-bound)."""
         def _encode_one(image: "Image.Image") -> list:
             b64 = encode_image(image)
             return [{"role": "user", "content": [
@@ -130,7 +123,6 @@ class VLLMOfflineEngine:
             return list(pool.map(_encode_one, images))
 
     def _start_prep(self, images: Sequence["Image.Image"]) -> None:
-        """Start encoding the next batch in a background thread."""
         def _worker():
             try:
                 result = self._encode_images(images)
@@ -142,17 +134,12 @@ class VLLMOfflineEngine:
         self._prep_thread = threading.Thread(target=_worker, daemon=True)
         self._prep_thread.start()
 
-    # ------------------------------------------------------------------
-    # Public API
-    # ------------------------------------------------------------------
-
     def infer_batch(self, images: Sequence["Image.Image"]) -> List[str]:
         if not images:
             return []
 
         t0 = time.monotonic()
 
-        # Check if we have pre-encoded messages from a prior _start_prep call
         if self._prep_thread is not None:
             self._prep_thread.join()
             self._prep_thread = None
@@ -163,7 +150,6 @@ class VLLMOfflineEngine:
         if pre_encoded is not None and len(pre_encoded) == len(images):
             messages_list = pre_encoded
         else:
-            # No valid pre-encoded batch (first call, or size mismatch) — encode now
             messages_list = self._encode_images(images)
 
         t_prep = time.monotonic()
@@ -187,9 +173,4 @@ class VLLMOfflineEngine:
         return results
 
     def start_next_prep(self, images: Sequence["Image.Image"]) -> None:
-        """Pre-encode the next batch while current inference results are being processed.
-
-        Called by the orchestration layer (convert_pages_streaming) after
-        infer_batch returns but before the next batch's images are needed.
-        """
         self._start_prep(images)

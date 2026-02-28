@@ -1,6 +1,3 @@
-# pdf_ocr/parallel.py
-"""Data-parallel inference across multiple GPU replicas."""
-
 from __future__ import annotations
 
 import logging
@@ -13,10 +10,9 @@ LOGGER = logging.getLogger(__name__)
 
 
 class DataParallelEngine:
-    """Distributes batches round-robin across multiple VLLMOfflineEngine replicas.
+    """Each replica is pinned to a separate GPU.
 
-    Each replica is pinned to a separate GPU. Implements the same
-    ``infer_batch`` interface as ``VLLMOfflineEngine``.
+    Implements the same ``infer_batch`` interface as ``VLLMOfflineEngine``.
     """
 
     def __init__(self, replicas: list) -> None:

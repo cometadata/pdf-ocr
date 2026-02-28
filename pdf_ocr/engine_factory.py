@@ -1,6 +1,3 @@
-# pdf_ocr/engine_factory.py
-"""Factory for creating the appropriate offline inference engine."""
-
 from __future__ import annotations
 
 import logging
@@ -30,7 +27,6 @@ def create_offline_engine(config: ModelConfig) -> "InferenceEngine":
     gpus = detect_gpus()
     gpu_count = len(gpus)
 
-    # Check if user explicitly set tensor parallelism
     user_tp = config.vllm_args.get("tensor-parallel-size")
     if user_tp is not None and int(user_tp) > 1:
         LOGGER.info(
@@ -38,12 +34,10 @@ def create_offline_engine(config: ModelConfig) -> "InferenceEngine":
         )
         return VLLMOfflineEngine(config)
 
-    # Check if auto parallelism is disabled
     if not config.inference.auto_parallel:
         LOGGER.info("auto_parallel disabled; using single engine")
         return VLLMOfflineEngine(config)
 
-    # Multi-GPU data parallelism
     if gpu_count > 1:
         LOGGER.info(
             "Detected %d GPUs; creating DataParallelEngine with %d replicas",
@@ -51,7 +45,6 @@ def create_offline_engine(config: ModelConfig) -> "InferenceEngine":
         )
         replicas = []
         for gpu in gpus:
-            # Pin each replica to a specific GPU
             os.environ["CUDA_VISIBLE_DEVICES"] = str(gpu.index)
             replica = VLLMOfflineEngine(config)
             replicas.append(replica)
@@ -61,5 +54,4 @@ def create_offline_engine(config: ModelConfig) -> "InferenceEngine":
         )
         return DataParallelEngine(replicas)
 
-    # Single GPU or no GPU
     return VLLMOfflineEngine(config)

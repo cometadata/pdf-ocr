@@ -97,10 +97,7 @@ def convert_pages_streaming(
     checkpoint_dir: Optional[Path] = None,
     resume_from_checkpoint: bool = False,
 ) -> Iterator[List[Tuple[str, str, PageResult]]]:
-    """Process pages in batches, yielding results per batch instead of accumulating.
 
-    Each yield is a list of (doc_id, source, PageResult) tuples for one batch.
-    """
     from .storage import load_checkpoints, save_batch_checkpoint
 
     start = time.time()
@@ -129,12 +126,11 @@ def convert_pages_streaming(
             yield page
 
     batches_iter = _batch_pages(limited_pages(), batch_size)
-    # Peek-ahead for pipeline overlap
     current_batch = next(batches_iter, None)
 
     while current_batch is not None:
         batch = current_batch
-        current_batch = next(batches_iter, None)  # peek next
+        current_batch = next(batches_iter, None)
 
         batch_count += 1
         batch_start = time.time()
@@ -142,7 +138,6 @@ def convert_pages_streaming(
         LOGGER.info("Processing batch %d (%d pages)", batch_count, len(batch))
         markdowns = _infer_with_retry(client, batch, max_depth=max_retry_depth)
 
-        # Kick off pre-encoding of next batch while we process results
         if current_batch is not None:
             prep = getattr(client, "start_next_prep", None)
             if prep is not None:
@@ -191,7 +186,6 @@ def convert_pages(
     checkpoint_dir: Optional[Path] = None,
     resume_from_checkpoint: bool = False,
 ) -> List[ConversionResult]:
-    """Process pages and return grouped results. Wraps convert_pages_streaming."""
     all_results: List[Tuple[str, str, PageResult]] = []
     for batch_results in convert_pages_streaming(
         pages,
