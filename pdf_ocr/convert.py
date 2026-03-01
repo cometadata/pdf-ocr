@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import logging
+import queue
+import threading
 import time
 from collections import OrderedDict
 from dataclasses import dataclass
@@ -41,6 +43,55 @@ def _batch_pages(pages: Iterator[PageImage], batch_size: int) -> Iterator[List[P
             batch = []
     if batch:
         yield batch
+
+
+class PrefetchIterator:
+    """Wrap an iterator in a background thread with a bounded queue.
+
+    Allows the source (e.g. PDF rendering) to run ahead of the consumer
+    (e.g. inference), overlapping CPU and GPU work.
+    """
+
+    def __init__(
+        self,
+        source: Iterator[PageImage],
+        queue_size: int,
+        stop_event: threading.Event,
+    ) -> None:
+        self._queue: queue.Queue[PageImage | None] = queue.Queue(maxsize=queue_size)
+        self._stop_event = stop_event
+        self._thread = threading.Thread(
+            target=self._producer, args=(source,), daemon=True,
+        )
+        self._thread.start()
+
+    def _producer(self, source: Iterator[PageImage]) -> None:
+        try:
+            for page in source:
+                while True:
+                    if self._stop_event.is_set():
+                        return
+                    try:
+                        self._queue.put(page, timeout=0.5)
+                        break
+                    except queue.Full:
+                        continue
+        except Exception:
+            LOGGER.exception("Prefetch producer failed unexpectedly")
+        finally:
+            try:
+                self._queue.put(None, timeout=2.0)
+            except queue.Full:
+                pass
+
+    def __iter__(self) -> "PrefetchIterator":
+        return self
+
+    def __next__(self) -> PageImage:
+        item = self._queue.get()
+        if item is None:
+            raise StopIteration
+        return item
 
 
 def _infer_with_retry(

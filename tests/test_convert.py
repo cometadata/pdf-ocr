@@ -1,8 +1,11 @@
+import threading
+
 import pytest
 from unittest.mock import MagicMock, patch
 from PIL import Image
 
 from pdf_ocr.convert import (
+    PrefetchIterator,
     _batch_pages, _group_by_document, _infer_with_retry,
     convert_pages, convert_pages_streaming,
 )
@@ -226,3 +229,89 @@ def test_convert_pages_streaming_checkpoint_compat(tmp_path):
     assert checkpoint_dir.is_dir()
     checkpoint_files = sorted(checkpoint_dir.glob("batch_*.json"))
     assert len(checkpoint_files) == 2
+
+
+# --- PrefetchIterator tests ---
+
+
+def test_prefetch_iterator_yields_all_pages():
+    """PrefetchIterator should yield every page in order."""
+    pages = [_make_page("doc1", i) for i in range(6)]
+    stop = threading.Event()
+    prefetch = PrefetchIterator(iter(pages), queue_size=4, stop_event=stop)
+
+    result = list(prefetch)
+    stop.set()
+
+    assert len(result) == 6
+    assert [p.page_index for p in result] == [0, 1, 2, 3, 4, 5]
+    assert all(p.doc_id == "doc1" for p in result)
+
+
+def test_prefetch_iterator_empty_source():
+    """PrefetchIterator on empty source should yield nothing."""
+    stop = threading.Event()
+    prefetch = PrefetchIterator(iter([]), queue_size=4, stop_event=stop)
+
+    result = list(prefetch)
+    stop.set()
+
+    assert result == []
+
+
+def test_prefetch_iterator_stop_event():
+    """Setting stop_event should terminate the producer."""
+    def infinite_source():
+        i = 0
+        while True:
+            yield _make_page("doc1", i)
+            i += 1
+
+    stop = threading.Event()
+    prefetch = PrefetchIterator(infinite_source(), queue_size=2, stop_event=stop)
+
+    # Consume a couple pages then signal stop
+    first = next(prefetch)
+    second = next(prefetch)
+    assert first.page_index == 0
+    assert second.page_index == 1
+
+    stop.set()
+
+    # Should terminate (not hang) — drain whatever is left
+    remaining = list(prefetch)
+    assert isinstance(remaining, list)
+
+
+def test_prefetch_iterator_producer_runs_ahead():
+    """Producer should fill the queue before consumer starts pulling."""
+    produced = threading.Event()
+
+    def source():
+        for i in range(4):
+            yield _make_page("doc1", i)
+        produced.set()
+
+    stop = threading.Event()
+    prefetch = PrefetchIterator(source(), queue_size=8, stop_event=stop)
+
+    # Wait for producer to exhaust source (queue big enough to hold all)
+    produced.wait(timeout=2.0)
+    assert produced.is_set(), "Producer should have finished before consumer started"
+
+    result = list(prefetch)
+    stop.set()
+    assert len(result) == 4
+
+
+def test_prefetch_iterator_backpressure():
+    """Producer should block when queue is full (not drop pages)."""
+    pages = [_make_page("doc1", i) for i in range(10)]
+    stop = threading.Event()
+    prefetch = PrefetchIterator(iter(pages), queue_size=2, stop_event=stop)
+
+    result = list(prefetch)
+    stop.set()
+
+    assert len(result) == 10
+    assert [p.page_index for p in result] == list(range(10))
