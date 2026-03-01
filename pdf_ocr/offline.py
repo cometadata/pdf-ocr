@@ -1,13 +1,8 @@
 from __future__ import annotations
 
-import base64
 import json
 import logging
-import queue
-import threading
 import time
-from concurrent.futures import ThreadPoolExecutor
-from io import BytesIO
 from typing import TYPE_CHECKING, Any, Dict, List, Sequence
 
 from .config import ModelConfig
@@ -72,12 +67,6 @@ def build_engine_kwargs(config: ModelConfig, auto_kwargs: Dict[str, Any] | None 
     return kwargs
 
 
-def encode_image(image: "Image.Image") -> str:
-    buffer = BytesIO()
-    image.save(buffer, format="JPEG", quality=95)
-    return base64.b64encode(buffer.getvalue()).decode("utf-8")
-
-
 class VLLMOfflineEngine:
 
     def __init__(self, config: ModelConfig) -> None:
@@ -109,50 +98,18 @@ class VLLMOfflineEngine:
             top_p=config.inference.top_p,
         )
 
-        self._prep_result: queue.Queue[list | None] = queue.Queue(maxsize=1)
-        self._prep_thread: threading.Thread | None = None
-
-    def _encode_images(self, images: Sequence["Image.Image"]) -> list:
-        def _encode_one(image: "Image.Image") -> list:
-            b64 = encode_image(image)
-            return [{"role": "user", "content": [
-                {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{b64}"}},
-            ]}]
-
-        with ThreadPoolExecutor(max_workers=self.config.inference.max_encode_workers) as pool:
-            return list(pool.map(_encode_one, images))
-
-    def _start_prep(self, images: Sequence["Image.Image"]) -> None:
-        def _worker():
-            try:
-                result = self._encode_images(images)
-                self._prep_result.put(result)
-            except Exception:
-                LOGGER.exception("Background image encoding failed")
-                self._prep_result.put(None)
-
-        self._prep_thread = threading.Thread(target=_worker, daemon=True)
-        self._prep_thread.start()
-
     def infer_batch(self, images: Sequence["Image.Image"]) -> List[str]:
         if not images:
             return []
 
         t0 = time.monotonic()
 
-        if self._prep_thread is not None:
-            self._prep_thread.join()
-            self._prep_thread = None
-            pre_encoded = self._prep_result.get_nowait()
-        else:
-            pre_encoded = None
-
-        if pre_encoded is not None and len(pre_encoded) == len(images):
-            messages_list = pre_encoded
-        else:
-            messages_list = self._encode_images(images)
-
-        t_prep = time.monotonic()
+        messages_list = [
+            [{"role": "user", "content": [
+                {"type": "image_url", "image_url": {"url": image}},
+            ]}]
+            for image in images
+        ]
 
         outputs = self._llm.chat(
             messages=messages_list,
@@ -163,14 +120,9 @@ class VLLMOfflineEngine:
         results = [o.outputs[0].text if o.outputs else "" for o in outputs]
 
         LOGGER.info(
-            "Batch inference: %d images | prep=%.2fs | vllm_chat=%.2fs | total=%.2fs | %.2f pages/s",
+            "Batch inference: %d images | %.2fs | %.2f pages/s",
             len(images),
-            t_prep - t0,
-            t_infer - t_prep,
             t_infer - t0,
             len(images) / (t_infer - t0),
         )
         return results
-
-    def start_next_prep(self, images: Sequence["Image.Image"]) -> None:
-        self._start_prep(images)

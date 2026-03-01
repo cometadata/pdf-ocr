@@ -198,7 +198,7 @@ class TestVLLMOfflineEngine:
             )
 
     @patch.dict("sys.modules", {"vllm": MagicMock()})
-    def test_infer_batch_returns_text(self):
+    def test_infer_batch_passes_pil_images_directly(self):
         from PIL import Image
         import sys
 
@@ -225,8 +225,8 @@ class TestVLLMOfflineEngine:
 
         call_args = mock_llm_instance.chat.call_args
         messages_list = call_args[1].get("messages") or call_args[0][0]
-        image_url = messages_list[0][0]["content"][0]["image_url"]["url"]
-        assert isinstance(image_url, str) and image_url.startswith("data:image/jpeg;base64,")
+        image_value = messages_list[0][0]["content"][0]["image_url"]["url"]
+        assert isinstance(image_value, Image.Image)
 
     @patch.dict("sys.modules", {"vllm": MagicMock()})
     def test_infer_batch_empty(self):
@@ -262,83 +262,8 @@ class TestVLLMOfflineEngine:
             mock_logger.warning.assert_called_once()
 
     @patch.dict("sys.modules", {"vllm": MagicMock()})
-    def test_thread_pool_uses_max_encode_workers(self):
-        from PIL import Image
-        import sys
-
-        mock_vllm = sys.modules["vllm"]
-        mock_llm_instance = MagicMock()
-        mock_vllm.LLM.return_value = mock_llm_instance
-
-        mock_output = MagicMock()
-        mock_output.outputs = [MagicMock(text="# Result")]
-        mock_llm_instance.chat.return_value = [mock_output]
-
-        config = ModelConfig(
-            model_id="test/model",
-            served_model_name="test-model",
-            vllm_args={"trust-remote-code": True},
-            inference=InferenceConfig(max_encode_workers=4),
-        )
-        engine = VLLMOfflineEngine(config)
-
-        with patch("pdf_ocr.offline.ThreadPoolExecutor") as MockPool:
-            mock_pool_instance = MagicMock()
-            mock_pool_instance.__enter__ = MagicMock(return_value=mock_pool_instance)
-            mock_pool_instance.__exit__ = MagicMock(return_value=False)
-            mock_pool_instance.map.return_value = [[{"role": "user", "content": []}]]
-            MockPool.return_value = mock_pool_instance
-
-            img = Image.new("RGB", (100, 100))
-            engine.infer_batch([img])
-
-            MockPool.assert_called_once_with(max_workers=4)
-
-    @patch.dict("sys.modules", {"vllm": MagicMock()})
-    def test_default_max_encode_workers_is_8(self):
-        import sys
-
-        mock_vllm = sys.modules["vllm"]
-        mock_vllm.LLM.return_value = MagicMock()
-
-        config = ModelConfig(
-            model_id="test/model",
-            served_model_name="test-model",
-        )
-        assert config.inference.max_encode_workers == 8
-
-
-class TestAsyncPipeline:
-    @patch.dict("sys.modules", {"vllm": MagicMock()})
-    def test_infer_batch_still_returns_correct_results(self):
-        from PIL import Image
-        import sys
-
-        mock_vllm = sys.modules["vllm"]
-        mock_llm_instance = MagicMock()
-        mock_vllm.LLM.return_value = mock_llm_instance
-
-        mock_outputs = [
-            MagicMock(outputs=[MagicMock(text="# Page 0")]),
-            MagicMock(outputs=[MagicMock(text="# Page 1")]),
-        ]
-        mock_llm_instance.chat.return_value = mock_outputs
-
-        config = ModelConfig(
-            model_id="test/model",
-            served_model_name="test-model",
-            vllm_args={"trust-remote-code": True},
-        )
-        engine = VLLMOfflineEngine(config)
-
-        images = [Image.new("RGB", (100, 100)) for _ in range(2)]
-        results = engine.infer_batch(images)
-
-        assert results == ["# Page 0", "# Page 1"]
-
-    @patch.dict("sys.modules", {"vllm": MagicMock()})
-    def test_infer_batch_encodes_as_jpeg_base64(self):
-        """Images must still be encoded as JPEG base64 data URIs."""
+    def test_no_base64_encoding(self):
+        """Verify no base64 or ThreadPoolExecutor usage."""
         from PIL import Image
         import sys
 
@@ -361,7 +286,9 @@ class TestAsyncPipeline:
         call_args = mock_llm_instance.chat.call_args
         messages_list = call_args[1].get("messages") or call_args[0][0]
         url = messages_list[0][0]["content"][0]["image_url"]["url"]
-        assert url.startswith("data:image/jpeg;base64,")
+        # Must be PIL Image, NOT a base64 string
+        assert not isinstance(url, str)
+        assert isinstance(url, Image.Image)
 
     @patch.dict("sys.modules", {"vllm": MagicMock()})
     def test_multiple_batches_all_succeed(self):
@@ -387,20 +314,18 @@ class TestAsyncPipeline:
             assert results == [f"result_{batch_idx}"]
 
     @patch.dict("sys.modules", {"vllm": MagicMock()})
-    def test_infer_batch_empty_still_works(self):
+    def test_no_start_next_prep_method(self):
         import sys
 
         mock_vllm = sys.modules["vllm"]
-        mock_llm_instance = MagicMock()
-        mock_vllm.LLM.return_value = mock_llm_instance
+        mock_vllm.LLM.return_value = MagicMock()
 
         config = ModelConfig(
             model_id="test/model",
             served_model_name="test-model",
         )
         engine = VLLMOfflineEngine(config)
-        assert engine.infer_batch([]) == []
-        mock_llm_instance.chat.assert_not_called()
+        assert not hasattr(engine, "start_next_prep")
 
 
 class TestFactoryIntegration:
