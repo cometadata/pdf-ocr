@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import logging
 import shutil
+import time
 from pathlib import Path
 from typing import TYPE_CHECKING, List, Optional, Tuple
 
@@ -87,7 +88,6 @@ def save_batch_incremental(
     gets a single `<doc_id>.md` file under *output_dir*.
     """
     output_dir = Path(output_dir)
-    # Group by doc_id within this batch
     from collections import defaultdict
     by_doc: dict[str, List[Tuple[str, PageResult]]] = defaultdict(list)
     for doc_id, source, page_result in batch_results:
@@ -107,6 +107,18 @@ def save_batch_incremental(
         with open(md_path, "a", encoding="utf-8") as f:
             f.write("".join(parts))
         LOGGER.debug("Appended %d pages to %s", len(pages), md_path)
+
+
+def _retry_with_backoff(fn, max_attempts=3, base_delay=2.0):
+    for attempt in range(1, max_attempts + 1):
+        try:
+            return fn()
+        except Exception:
+            if attempt == max_attempts:
+                raise
+            delay = base_delay * (2 ** (attempt - 1))
+            LOGGER.warning("Attempt %d/%d failed; retrying in %.1fs", attempt, max_attempts, delay, exc_info=True)
+            time.sleep(delay)
 
 
 def push_batch_to_hub(
@@ -140,13 +152,16 @@ def push_batch_to_hub(
 
     with tempfile.NamedTemporaryFile(suffix=".parquet", delete=True) as tmp:
         pq.write_table(table, tmp.name)
-        api.upload_file(
-            path_or_fileobj=tmp.name,
-            path_in_repo=shard_name,
-            repo_id=repo_id,
-            repo_type="dataset",
-            commit_message=f"Add shard {shard_index:05d}",
-        )
+
+        def _upload():
+            api.upload_file(
+                path_or_fileobj=tmp.name,
+                path_in_repo=shard_name,
+                repo_id=repo_id,
+                repo_type="dataset",
+                commit_message=f"Add shard {shard_index:05d}",
+            )
+        _retry_with_backoff(_upload)
     LOGGER.info("Pushed shard %s (%d rows) to %s", shard_name, len(rows), repo_id)
 
 
@@ -192,6 +207,53 @@ def load_checkpoints(output_dir: Path) -> List[Tuple[str, str, PageResult]]:
 
     LOGGER.info("Loaded %d pages from %s checkpoints", len(results), len(list(checkpoint_dir.glob("batch_*.json"))))
     return results
+
+
+def load_hub_progress(
+    repo_id: str,
+    token: Optional[str] = None,
+) -> Tuple[int, set]:
+    """Query an existing HF dataset repo to find already-uploaded shards.
+
+    Returns ``(next_shard_index, completed_pages)`` where
+    *completed_pages* is a set of ``(doc_id, page_index)`` tuples.
+    Falls back to ``(0, set())`` on any error so the job starts fresh.
+    """
+    import re
+    from huggingface_hub import HfApi, hf_hub_download
+
+    try:
+        api = HfApi(token=token)
+        files = api.list_repo_files(repo_id, repo_type="dataset")
+    except Exception:
+        LOGGER.info("No existing repo %s found; starting from scratch", repo_id)
+        return 0, set()
+
+    shard_pattern = re.compile(r"^data/shard_(\d+)\.parquet$")
+    shard_files = []
+    max_index = -1
+    for f in files:
+        m = shard_pattern.match(f)
+        if m:
+            shard_files.append(f)
+            max_index = max(max_index, int(m.group(1)))
+
+    if not shard_files:
+        return 0, set()
+
+    import pyarrow.parquet as pq
+    completed: set = set()
+    for sf in shard_files:
+        try:
+            local_path = hf_hub_download(repo_id, sf, repo_type="dataset", token=token)
+            table = pq.read_table(local_path, columns=["doc_id", "page_index"])
+            for i in range(table.num_rows):
+                completed.add((table.column("doc_id")[i].as_py(), table.column("page_index")[i].as_py()))
+        except Exception:
+            LOGGER.warning("Failed to read shard %s; skipping", sf)
+
+    LOGGER.info("Resume: %d shards, %d completed pages, next shard=%d", len(shard_files), len(completed), max_index + 1)
+    return max_index + 1, completed
 
 
 def clear_checkpoints(output_dir: Path) -> None:

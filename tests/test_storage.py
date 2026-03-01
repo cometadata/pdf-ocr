@@ -9,6 +9,7 @@ from pdf_ocr.storage import (
     save_batch_incremental,
     push_batch_to_hub,
     load_checkpoints,
+    load_hub_progress,
     clear_checkpoints,
     CHECKPOINT_DIR_NAME,
 )
@@ -131,9 +132,6 @@ def test_clear_checkpoints_noop_when_absent(tmp_path):
     clear_checkpoints(tmp_path)
 
 
-# --- save_batch_incremental tests ---
-
-
 def test_save_batch_incremental_creates_files(tmp_path):
     batch = [
         ("doc1", "doc1.pdf", PageResult(page_index=0, markdown="# Page 0")),
@@ -190,9 +188,6 @@ def test_save_batch_incremental_subdirectory_doc(tmp_path):
     assert "Nested" in md_file.read_text()
 
 
-# --- push_batch_to_hub tests ---
-
-
 def test_push_batch_to_hub_uploads_shard():
     batch = [
         ("doc1", "doc1.pdf", PageResult(page_index=0, markdown="# Hello")),
@@ -225,3 +220,88 @@ def test_push_batch_to_hub_shard_numbering():
 
     call_kwargs = mock_api_instance.upload_file.call_args[1]
     assert call_kwargs["path_in_repo"] == "data/shard_00042.parquet"
+
+
+def test_push_batch_to_hub_retries_on_failure():
+    batch = [
+        ("doc1", "doc1.pdf", PageResult(page_index=0, markdown="# Hello")),
+    ]
+
+    mock_api_instance = MagicMock()
+    mock_api_instance.upload_file.side_effect = [
+        RuntimeError("transient"),
+        RuntimeError("transient"),
+        None,
+    ]
+    with patch("huggingface_hub.HfApi", return_value=mock_api_instance), \
+         patch("pdf_ocr.storage.time.sleep"):
+        push_batch_to_hub(batch, repo_id="user/results", shard_index=0, token="fake")
+
+    assert mock_api_instance.upload_file.call_count == 3
+
+
+def test_push_batch_to_hub_raises_after_max_retries():
+    batch = [
+        ("doc1", "doc1.pdf", PageResult(page_index=0, markdown="# Hello")),
+    ]
+
+    mock_api_instance = MagicMock()
+    mock_api_instance.upload_file.side_effect = RuntimeError("persistent")
+    with patch("huggingface_hub.HfApi", return_value=mock_api_instance), \
+         patch("pdf_ocr.storage.time.sleep"), \
+         pytest.raises(RuntimeError, match="persistent"):
+        push_batch_to_hub(batch, repo_id="user/results", shard_index=0, token="fake")
+
+    assert mock_api_instance.upload_file.call_count == 3
+
+
+def test_load_hub_progress_no_repo():
+    with patch("huggingface_hub.HfApi") as MockApi:
+        MockApi.return_value.list_repo_files.side_effect = Exception("not found")
+        idx, completed = load_hub_progress("user/nonexistent", token="fake")
+
+    assert idx == 0
+    assert completed == set()
+
+
+def test_load_hub_progress_no_shards():
+    with patch("huggingface_hub.HfApi") as MockApi:
+        MockApi.return_value.list_repo_files.return_value = ["README.md"]
+        idx, completed = load_hub_progress("user/results", token="fake")
+
+    assert idx == 0
+    assert completed == set()
+
+
+def test_load_hub_progress_with_shards(tmp_path):
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+
+    shard0 = tmp_path / "shard_00000.parquet"
+    table0 = pa.Table.from_pylist([
+        {"doc_id": "paper1", "source": "paper1.pdf", "page_index": 0, "markdown": "# P1"},
+        {"doc_id": "paper1", "source": "paper1.pdf", "page_index": 1, "markdown": "P1 page2"},
+    ])
+    pq.write_table(table0, str(shard0))
+
+    shard1 = tmp_path / "shard_00001.parquet"
+    table1 = pa.Table.from_pylist([
+        {"doc_id": "paper2", "source": "paper2.pdf", "page_index": 0, "markdown": "# P2"},
+    ])
+    pq.write_table(table1, str(shard1))
+
+    def fake_download(repo_id, filename, **kwargs):
+        name = Path(filename).name
+        return str(tmp_path / name)
+
+    with patch("huggingface_hub.HfApi") as MockApi, \
+         patch("huggingface_hub.hf_hub_download", side_effect=fake_download):
+        MockApi.return_value.list_repo_files.return_value = [
+            "README.md",
+            "data/shard_00000.parquet",
+            "data/shard_00001.parquet",
+        ]
+        idx, completed = load_hub_progress("user/results", token="fake")
+
+    assert idx == 2
+    assert completed == {("paper1", 0), ("paper1", 1), ("paper2", 0)}

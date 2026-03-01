@@ -13,21 +13,13 @@
 # ]
 # ///
 
-"""
-Entrypoint for HuggingFace Jobs.
-
-Expects pdf_ocr to be pre-installed (e.g. via pip) in the same Python
-environment.  When using the offline backend with a vllm Docker image,
-launch via run_job (not run_uv_job) so that the system-installed vllm
-is visible.
-
-All configuration is via environment variables.
-"""
+"""Entrypoint for HuggingFace Jobs."""
 
 from __future__ import annotations
 
 import logging
 import os
+import signal
 import sys
 import time
 from pathlib import Path
@@ -35,13 +27,20 @@ from pathlib import Path
 LOGGER = logging.getLogger(__name__)
 
 
-def ensure_code_checkout() -> Path:
-    """Download supplementary job code from HF Hub if JOB_CODE_REPO is set.
+def _log_memory():
+    try:
+        with open("/proc/self/status") as f:
+            for line in f:
+                if line.startswith("VmRSS:"):
+                    rss_kb = int(line.split()[1])
+                    LOGGER.info("Memory: RSS = %.1f MB", rss_kb / 1024)
+                    return
+    except Exception:
+        pass
 
-    The primary pdf_ocr package is installed from GitHub via PEP 723
-    dependencies. This function is only needed if extra code is hosted
-    in a HF repo.
-    """
+
+def ensure_code_checkout() -> Path:
+    """Download supplementary job code from HF Hub if JOB_CODE_REPO is set."""
     repo_id = os.environ.get("JOB_CODE_REPO")
     if not repo_id:
         return Path(".")
@@ -68,7 +67,12 @@ def main() -> None:
         format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
     )
 
-    # Download code if running in HF Jobs
+    def _sigterm_handler(signum, frame):
+        LOGGER.info("Received SIGTERM, initiating graceful shutdown")
+        raise SystemExit(1)
+
+    signal.signal(signal.SIGTERM, _sigterm_handler)
+
     code_dir = ensure_code_checkout()
     if str(code_dir) not in sys.path:
         sys.path.insert(0, str(code_dir))
@@ -122,7 +126,26 @@ def main() -> None:
 
     total_pages = 0
     shard_index = 0
-    flush_every = config.inference.flush_every
+    completed_pages: set = set()
+    if hf_repo_id:
+        from pdf_ocr.storage import load_hub_progress
+        shard_index, completed_pages = load_hub_progress(hf_repo_id, token=hf_token)
+
+    if completed_pages:
+        original_pages = pages
+        def _filter_completed(page_iter):
+            skipped = 0
+            for page in page_iter:
+                if (page.doc_id, page.page_index) in completed_pages:
+                    skipped += 1
+                    page.image.close()
+                    continue
+                yield page
+            if skipped:
+                LOGGER.info("Skipped %d already-completed pages", skipped)
+        pages = _filter_completed(original_pages)
+
+    flush_every = int(os.environ.get("FLUSH_EVERY", "3"))
     batch_count = 0
     pending_hub_rows = []
     output_dir = os.environ.get("OUTPUT_DIR", "./outputs")
@@ -137,6 +160,7 @@ def main() -> None:
         ):
             total_pages += len(batch_results)
             batch_count += 1
+            _log_memory()
 
             if hf_repo_id:
                 pending_hub_rows.extend(batch_results)
@@ -150,15 +174,18 @@ def main() -> None:
                     pending_hub_rows = []
             else:
                 save_batch_incremental(batch_results, Path(output_dir))
-
-        # Flush remaining hub rows
-        if hf_repo_id and pending_hub_rows:
-            push_batch_to_hub(
-                pending_hub_rows, repo_id=hf_repo_id,
-                shard_index=shard_index,
-                token=hf_token, private=private,
-            )
     finally:
+        if hf_repo_id and pending_hub_rows:
+            try:
+                LOGGER.info("Flushing %d pending rows on shutdown", len(pending_hub_rows))
+                push_batch_to_hub(
+                    pending_hub_rows, repo_id=hf_repo_id,
+                    shard_index=shard_index,
+                    token=hf_token, private=private,
+                )
+            except Exception:
+                LOGGER.exception("Failed to flush pending rows on shutdown")
+
         if effective_backend != "offline":
             shutdown_server(server_process)
 
