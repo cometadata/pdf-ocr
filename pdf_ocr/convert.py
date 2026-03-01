@@ -46,12 +46,6 @@ def _batch_pages(pages: Iterator[PageImage], batch_size: int) -> Iterator[List[P
 
 
 class PrefetchIterator:
-    """Wrap an iterator in a background thread with a bounded queue.
-
-    Allows the source (e.g. PDF rendering) to run ahead of the consumer
-    (e.g. inference), overlapping CPU and GPU work.
-    """
-
     def __init__(
         self,
         source: Iterator[PageImage],
@@ -100,13 +94,6 @@ def _infer_with_retry(
     max_depth: int = 3,
     subdivision: int = 2,
 ) -> List[str]:
-    """Infer a batch, subdividing and retrying on failure.
-
-    When infer_batch raises, the batch is split in half and each sub-batch
-    is retried recursively up to *max_depth* levels. Pages that still fail
-    at max depth get empty strings, isolating single bad pages instead of
-    blanking entire batches.
-    """
     images = [p.image for p in batch]
     try:
         return client.infer_batch(images)

@@ -32,7 +32,6 @@ class PageImage:
 
 
 def render_page(page, cfg: PdfRenderingConfig) -> Image.Image:
-    """Render a pypdfium2 page to a PIL Image."""
     scale = cfg.dpi / 72
     image = page.render(scale=scale).to_pil()
     w, h = image.size
@@ -45,7 +44,6 @@ def render_page(page, cfg: PdfRenderingConfig) -> Image.Image:
 
 
 def render_pdf(source: str | Path, cfg: PdfRenderingConfig, doc_id: Optional[str] = None) -> Iterator[PageImage]:
-    """Render pages from a PDF file lazily, yielding one at a time."""
     t0 = time.monotonic()
     path = Path(source)
     if doc_id is None:
@@ -60,7 +58,6 @@ def render_pdf(source: str | Path, cfg: PdfRenderingConfig, doc_id: Optional[str
 
 
 def render_pdf_bytes(data: bytes, cfg: PdfRenderingConfig, doc_id: str, source: str = "") -> Iterator[PageImage]:
-    """Render pages from PDF bytes lazily, yielding one at a time."""
     t0 = time.monotonic()
     pdf = pdfium.PdfDocument(data)
     n_pages = len(pdf)
@@ -71,7 +68,6 @@ def render_pdf_bytes(data: bytes, cfg: PdfRenderingConfig, doc_id: str, source: 
 
 
 def detect_input_type(source: str) -> InputType:
-    """Auto-detect the input type from the source string."""
     if source.startswith("hf://"):
         return InputType.HF_DATASET
     path = Path(source)
@@ -85,13 +81,11 @@ def detect_input_type(source: str) -> InputType:
 
 
 def _load_single_pdf(source: str, cfg: PdfRenderingConfig) -> Iterator[PageImage]:
-    """Load pages from a single PDF file."""
     LOGGER.info("Loading PDF: %s", source)
     yield from render_pdf(source, cfg)
 
 
 def _load_directory(source: str, cfg: PdfRenderingConfig) -> Iterator[PageImage]:
-    """Load pages from all PDFs in a directory."""
     base = Path(source)
     pdf_files = sorted(base.rglob("*.pdf"))
     LOGGER.info("Found %d PDFs in %s", len(pdf_files), source)
@@ -105,7 +99,6 @@ def _load_directory(source: str, cfg: PdfRenderingConfig) -> Iterator[PageImage]
 
 def _load_hf_dataset(source: str, cfg: PdfRenderingConfig, pdf_column: Optional[str] = None,
                      split: str = "train", token: Optional[str] = None) -> Iterator[PageImage]:
-    """Load pages from a HuggingFace dataset or repo containing PDFs."""
     repo_id = source.removeprefix("hf://")
 
     try:
@@ -155,7 +148,6 @@ def _load_hf_dataset(source: str, cfg: PdfRenderingConfig, pdf_column: Optional[
 
 
 def _load_hf_repo_files(repo_id: str, cfg: PdfRenderingConfig, token: Optional[str] = None) -> Iterator[PageImage]:
-    """Load PDFs from a HuggingFace repo (raw files, not a dataset)."""
     from huggingface_hub import HfApi, hf_hub_download
 
     api = HfApi(token=token)
@@ -177,11 +169,9 @@ def _load_hf_repo_files(repo_id: str, cfg: PdfRenderingConfig, token: Optional[s
 
 
 def _detect_pdf_column(ds, pdf_column: Optional[str] = None) -> Optional[str]:
-    """Detect which column contains PDF data."""
     if pdf_column and pdf_column in ds.column_names:
         return pdf_column
 
-    # Try common names
     candidates = ["pdf", "file", "content", "data", "document", "pdf_data", "pdf_bytes"]
     for name in candidates:
         if name in ds.column_names:
@@ -192,7 +182,6 @@ def _detect_pdf_column(ds, pdf_column: Optional[str] = None) -> Optional[str]:
 
 def load_pdfs(source: str, config: ModelConfig, pdf_column: Optional[str] = None,
               split: str = "train", token: Optional[str] = None) -> Iterator[PageImage]:
-    """Auto-detect input type and yield page images."""
     input_type = detect_input_type(source)
     LOGGER.info("Detected input type: %s for source: %s", input_type.value, source)
 

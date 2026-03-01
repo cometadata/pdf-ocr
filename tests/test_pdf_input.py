@@ -65,7 +65,6 @@ def test_detect_input_type_hf_dataset():
 
 
 def test_render_pdf_returns_iterator():
-    """render_pdf should return a lazy iterator (generator), not a list."""
     mock_bitmap = MagicMock()
     mock_bitmap.to_pil.return_value = Image.new("RGB", (800, 1000))
 
@@ -86,7 +85,6 @@ def test_render_pdf_returns_iterator():
 
 
 def test_render_pdf_bytes_returns_iterator():
-    """render_pdf_bytes should return a lazy iterator (generator), not a list."""
     mock_bitmap = MagicMock()
     mock_bitmap.to_pil.return_value = Image.new("RGB", (800, 1000))
 
@@ -108,7 +106,6 @@ def test_render_pdf_bytes_returns_iterator():
 
 @patch("pdf_ocr.pdf_input.render_pdf")
 def test_load_directory_skips_bad_pdf(mock_render, tmp_path):
-    """A corrupt PDF in a directory should be skipped, not crash the pipeline."""
     cfg = PdfRenderingConfig(dpi=200, max_dimension=1540)
 
     (tmp_path / "a.pdf").write_bytes(b"dummy")

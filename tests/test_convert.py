@@ -118,9 +118,6 @@ def test_convert_pages_resumes_from_checkpoint(tmp_path):
     mock_client.infer_batch.assert_called_once()
 
 
-# --- _infer_with_retry tests ---
-
-
 def test_infer_with_retry_success_first_try():
     batch = [_make_page("doc1", 0), _make_page("doc1", 1)]
     mock_client = MagicMock()
@@ -135,7 +132,6 @@ def test_infer_with_retry_success_first_try():
 def test_infer_with_retry_subdivides_on_failure():
     batch = [_make_page("doc1", i) for i in range(4)]
     mock_client = MagicMock()
-    # First call (full batch) fails, sub-batches succeed
     mock_client.infer_batch.side_effect = [
         RuntimeError("OOM"),
         ["md0", "md1"],
@@ -159,14 +155,12 @@ def test_infer_with_retry_empty_at_max_depth():
 
 
 def test_infer_with_retry_isolates_single_bad_page():
-    """One bad page among 4 should only blank that page, not the whole batch."""
     batch = [_make_page("doc1", i) for i in range(4)]
     mock_client = MagicMock()
 
     call_count = [0]
     def side_effect(images):
         call_count[0] += 1
-        # Full batch fails, sub-batches of 2 fail if they contain page 2
         if len(images) == 4:
             raise RuntimeError("OOM")
         if len(images) == 2 and images[1] is batch[2].image:
@@ -181,13 +175,9 @@ def test_infer_with_retry_isolates_single_bad_page():
 
     results = _infer_with_retry(mock_client, batch, max_depth=3)
 
-    # Pages 0, 1, 3 should have content; page 2 should be empty
     assert len(results) == 4
     assert results[2] == ""
     assert all(r != "" for i, r in enumerate(results) if i != 2)
-
-
-# --- convert_pages_streaming tests ---
 
 
 def test_convert_pages_streaming_yields_batches():
@@ -206,13 +196,11 @@ def test_convert_pages_streaming_yields_batches():
     assert len(batches[0]) == 2
     assert len(batches[1]) == 2
     assert len(batches[2]) == 1
-    # Verify content
     assert batches[0][0][2].markdown == "md0"
     assert batches[2][0][2].markdown == "md4"
 
 
 def test_convert_pages_streaming_checkpoint_compat(tmp_path):
-    """Streaming should produce checkpoints identical to convert_pages."""
     pages = [_make_page("doc1", i) for i in range(3)]
 
     mock_client = MagicMock()
@@ -231,11 +219,7 @@ def test_convert_pages_streaming_checkpoint_compat(tmp_path):
     assert len(checkpoint_files) == 2
 
 
-# --- PrefetchIterator tests ---
-
-
 def test_prefetch_iterator_yields_all_pages():
-    """PrefetchIterator should yield every page in order."""
     pages = [_make_page("doc1", i) for i in range(6)]
     stop = threading.Event()
     prefetch = PrefetchIterator(iter(pages), queue_size=4, stop_event=stop)
@@ -249,7 +233,6 @@ def test_prefetch_iterator_yields_all_pages():
 
 
 def test_prefetch_iterator_empty_source():
-    """PrefetchIterator on empty source should yield nothing."""
     stop = threading.Event()
     prefetch = PrefetchIterator(iter([]), queue_size=4, stop_event=stop)
 
@@ -260,7 +243,6 @@ def test_prefetch_iterator_empty_source():
 
 
 def test_prefetch_iterator_stop_event():
-    """Setting stop_event should terminate the producer."""
     def infinite_source():
         i = 0
         while True:
@@ -270,7 +252,6 @@ def test_prefetch_iterator_stop_event():
     stop = threading.Event()
     prefetch = PrefetchIterator(infinite_source(), queue_size=2, stop_event=stop)
 
-    # Consume a couple pages then signal stop
     first = next(prefetch)
     second = next(prefetch)
     assert first.page_index == 0
@@ -278,13 +259,11 @@ def test_prefetch_iterator_stop_event():
 
     stop.set()
 
-    # Should terminate (not hang) — drain whatever is left
     remaining = list(prefetch)
     assert isinstance(remaining, list)
 
 
 def test_prefetch_iterator_producer_runs_ahead():
-    """Producer should fill the queue before consumer starts pulling."""
     produced = threading.Event()
 
     def source():
@@ -295,7 +274,6 @@ def test_prefetch_iterator_producer_runs_ahead():
     stop = threading.Event()
     prefetch = PrefetchIterator(source(), queue_size=8, stop_event=stop)
 
-    # Wait for producer to exhaust source (queue big enough to hold all)
     produced.wait(timeout=2.0)
     assert produced.is_set(), "Producer should have finished before consumer started"
 
@@ -305,7 +283,6 @@ def test_prefetch_iterator_producer_runs_ahead():
 
 
 def test_prefetch_iterator_backpressure():
-    """Producer should block when queue is full (not drop pages)."""
     pages = [_make_page("doc1", i) for i in range(10)]
     stop = threading.Event()
     prefetch = PrefetchIterator(iter(pages), queue_size=2, stop_event=stop)
