@@ -97,7 +97,10 @@ def _load_directory(source: str, cfg: PdfRenderingConfig) -> Iterator[PageImage]
     LOGGER.info("Found %d PDFs in %s", len(pdf_files), source)
     for pdf_path in pdf_files:
         doc_id = pdf_path.relative_to(base).with_suffix("").as_posix()
-        yield from render_pdf(pdf_path, cfg, doc_id=doc_id)
+        try:
+            yield from render_pdf(pdf_path, cfg, doc_id=doc_id)
+        except Exception:
+            LOGGER.warning("Failed to render %s, skipping document", pdf_path, exc_info=True)
 
 
 def _load_hf_dataset(source: str, cfg: PdfRenderingConfig, pdf_column: Optional[str] = None,
@@ -132,20 +135,23 @@ def _load_hf_dataset(source: str, cfg: PdfRenderingConfig, pdf_column: Optional[
         if isinstance(doc_id, int):
             doc_id = f"doc_{doc_id:05d}"
 
-        if isinstance(value, bytes):
-            yield from render_pdf_bytes(value, cfg, doc_id=str(doc_id), source=repo_id)
-        elif isinstance(value, str):
-            if value.startswith("http://") or value.startswith("https://"):
-                import requests as req
-                resp = req.get(value, timeout=60)
-                resp.raise_for_status()
-                yield from render_pdf_bytes(resp.content, cfg, doc_id=str(doc_id), source=value)
+        try:
+            if isinstance(value, bytes):
+                yield from render_pdf_bytes(value, cfg, doc_id=str(doc_id), source=repo_id)
+            elif isinstance(value, str):
+                if value.startswith("http://") or value.startswith("https://"):
+                    import requests as req
+                    resp = req.get(value, timeout=60)
+                    resp.raise_for_status()
+                    yield from render_pdf_bytes(resp.content, cfg, doc_id=str(doc_id), source=value)
+                else:
+                    yield from render_pdf(value, cfg, doc_id=str(doc_id))
+            elif isinstance(value, dict) and "bytes" in value:
+                yield from render_pdf_bytes(value["bytes"], cfg, doc_id=str(doc_id), source=repo_id)
             else:
-                yield from render_pdf(value, cfg, doc_id=str(doc_id))
-        elif isinstance(value, dict) and "bytes" in value:
-            yield from render_pdf_bytes(value["bytes"], cfg, doc_id=str(doc_id), source=repo_id)
-        else:
-            LOGGER.warning("Skipping row %d: unsupported value type %s", idx, type(value))
+                LOGGER.warning("Skipping row %d: unsupported value type %s", idx, type(value))
+        except Exception:
+            LOGGER.warning("Failed to render document %s, skipping", doc_id, exc_info=True)
 
 
 def _load_hf_repo_files(repo_id: str, cfg: PdfRenderingConfig, token: Optional[str] = None) -> Iterator[PageImage]:
@@ -162,9 +168,12 @@ def _load_hf_repo_files(repo_id: str, cfg: PdfRenderingConfig, token: Optional[s
     LOGGER.info("Found %d PDFs in HF repo %s", len(pdf_files), repo_id)
 
     for pdf_path in sorted(pdf_files):
-        local_path = hf_hub_download(repo_id, pdf_path, repo_type="dataset", token=token)
-        doc_id = Path(pdf_path).with_suffix("").as_posix()
-        yield from render_pdf(local_path, cfg, doc_id=doc_id)
+        try:
+            local_path = hf_hub_download(repo_id, pdf_path, repo_type="dataset", token=token)
+            doc_id = Path(pdf_path).with_suffix("").as_posix()
+            yield from render_pdf(local_path, cfg, doc_id=doc_id)
+        except Exception:
+            LOGGER.warning("Failed to render %s from %s, skipping document", pdf_path, repo_id, exc_info=True)
 
 
 def _detect_pdf_column(ds, pdf_column: Optional[str] = None) -> Optional[str]:

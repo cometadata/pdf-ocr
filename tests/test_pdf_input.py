@@ -4,7 +4,10 @@ from pathlib import Path
 from unittest.mock import patch, MagicMock
 from PIL import Image
 
-from pdf_ocr.pdf_input import render_page, render_pdf, render_pdf_bytes, detect_input_type, InputType
+from pdf_ocr.pdf_input import (
+    render_page, render_pdf, render_pdf_bytes, detect_input_type, InputType,
+    _load_directory, PageImage,
+)
 from pdf_ocr.config import PdfRenderingConfig
 
 
@@ -101,3 +104,26 @@ def test_render_pdf_bytes_returns_iterator():
         assert isinstance(result, types.GeneratorType)
         pages = list(result)
         assert len(pages) == 2
+
+
+@patch("pdf_ocr.pdf_input.render_pdf")
+def test_load_directory_skips_bad_pdf(mock_render, tmp_path):
+    """A corrupt PDF in a directory should be skipped, not crash the pipeline."""
+    cfg = PdfRenderingConfig(dpi=200, max_dimension=1540)
+
+    (tmp_path / "a.pdf").write_bytes(b"dummy")
+    (tmp_path / "corrupt.pdf").write_bytes(b"dummy")
+    (tmp_path / "c.pdf").write_bytes(b"dummy")
+
+    def render_side_effect(path, cfg, doc_id=None):
+        if Path(path).stem == "corrupt":
+            raise RuntimeError("corrupt PDF")
+        yield PageImage(doc_id=doc_id, source=str(path), page_index=0,
+                        image=Image.new("RGB", (100, 100)))
+
+    mock_render.side_effect = render_side_effect
+
+    pages = list(_load_directory(str(tmp_path), cfg))
+    assert len(pages) == 2
+    doc_ids = {p.doc_id for p in pages}
+    assert "corrupt" not in doc_ids
