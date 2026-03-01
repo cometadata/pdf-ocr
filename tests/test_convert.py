@@ -5,7 +5,7 @@ from unittest.mock import MagicMock, patch
 from PIL import Image
 
 from pdf_ocr.convert import (
-    PrefetchIterator,
+    Pipeline,
     _batch_pages, _group_by_document, _infer_with_retry,
     convert_pages, convert_pages_streaming,
 )
@@ -219,30 +219,27 @@ def test_convert_pages_streaming_checkpoint_compat(tmp_path):
     assert len(checkpoint_files) == 2
 
 
-def test_prefetch_iterator_yields_all_pages():
-    pages = [_make_page("doc1", i) for i in range(6)]
+def test_pipeline_yields_all_pages():
+    pages = [_make_page("doc1", i) for i in range(7)]
     stop = threading.Event()
-    prefetch = PrefetchIterator(iter(pages), queue_size=4, stop_event=stop)
+    with Pipeline(iter(pages), batch_size=3, stop_event=stop) as pipeline:
+        batches = list(pipeline)
 
-    result = list(prefetch)
-    stop.set()
-
-    assert len(result) == 6
-    assert [p.page_index for p in result] == [0, 1, 2, 3, 4, 5]
-    assert all(p.doc_id == "doc1" for p in result)
+    all_pages = [p for batch in batches for p in batch]
+    assert len(all_pages) == 7
+    assert [p.page_index for p in all_pages] == list(range(7))
+    assert all(p.doc_id == "doc1" for p in all_pages)
 
 
-def test_prefetch_iterator_empty_source():
+def test_pipeline_empty_source():
     stop = threading.Event()
-    prefetch = PrefetchIterator(iter([]), queue_size=4, stop_event=stop)
+    with Pipeline(iter([]), batch_size=4, stop_event=stop) as pipeline:
+        batches = list(pipeline)
 
-    result = list(prefetch)
-    stop.set()
-
-    assert result == []
+    assert batches == []
 
 
-def test_prefetch_iterator_stop_event():
+def test_pipeline_stop_event():
     def infinite_source():
         i = 0
         while True:
@@ -250,45 +247,63 @@ def test_prefetch_iterator_stop_event():
             i += 1
 
     stop = threading.Event()
-    prefetch = PrefetchIterator(infinite_source(), queue_size=2, stop_event=stop)
-
-    first = next(prefetch)
-    second = next(prefetch)
-    assert first.page_index == 0
-    assert second.page_index == 1
-
-    stop.set()
-
-    remaining = list(prefetch)
-    assert isinstance(remaining, list)
+    with Pipeline(infinite_source(), batch_size=2, stop_event=stop) as pipeline:
+        first_batch = next(pipeline)
+        assert len(first_batch) == 2
+        assert first_batch[0].page_index == 0
+        stop.set()
 
 
-def test_prefetch_iterator_producer_runs_ahead():
-    produced = threading.Event()
-
-    def source():
-        for i in range(4):
-            yield _make_page("doc1", i)
-        produced.set()
-
-    stop = threading.Event()
-    prefetch = PrefetchIterator(source(), queue_size=8, stop_event=stop)
-
-    produced.wait(timeout=2.0)
-    assert produced.is_set(), "Producer should have finished before consumer started"
-
-    result = list(prefetch)
-    stop.set()
-    assert len(result) == 4
-
-
-def test_prefetch_iterator_backpressure():
+def test_pipeline_backpressure():
     pages = [_make_page("doc1", i) for i in range(10)]
     stop = threading.Event()
-    prefetch = PrefetchIterator(iter(pages), queue_size=2, stop_event=stop)
+    with Pipeline(iter(pages), batch_size=3, stop_event=stop) as pipeline:
+        batches = list(pipeline)
 
-    result = list(prefetch)
-    stop.set()
+    all_pages = [p for batch in batches for p in batch]
+    assert len(all_pages) == 10
+    assert [p.page_index for p in all_pages] == list(range(10))
 
-    assert len(result) == 10
-    assert [p.page_index for p in result] == list(range(10))
+
+def test_pipeline_partial_last_batch():
+    pages = [_make_page("doc1", i) for i in range(5)]
+    stop = threading.Event()
+    with Pipeline(iter(pages), batch_size=3, stop_event=stop) as pipeline:
+        batches = list(pipeline)
+
+    assert len(batches) == 2
+    assert len(batches[0]) == 3
+    assert len(batches[1]) == 2
+
+
+def test_pipeline_error_propagation():
+    def failing_source():
+        yield _make_page("doc1", 0)
+        raise RuntimeError("source failed")
+
+    stop = threading.Event()
+    with pytest.raises(RuntimeError, match="source failed"):
+        with Pipeline(failing_source(), batch_size=4, stop_event=stop) as pipeline:
+            list(pipeline)
+
+
+def test_pipeline_close_drains_images():
+    closed_images = []
+
+    def make_tracked_page(i):
+        page = _make_page("doc1", i)
+        original_close = page.image.close
+        def tracked_close():
+            closed_images.append(i)
+            original_close()
+        page.image.close = tracked_close
+        return page
+
+    pages = [make_tracked_page(i) for i in range(6)]
+    stop = threading.Event()
+    with Pipeline(iter(pages), batch_size=3, stop_event=stop) as pipeline:
+        first_batch = next(pipeline)
+        for p in first_batch:
+            p.image.close()
+
+    assert len(closed_images) >= 3

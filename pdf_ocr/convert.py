@@ -45,47 +45,162 @@ def _batch_pages(pages: Iterator[PageImage], batch_size: int) -> Iterator[List[P
         yield batch
 
 
-class PrefetchIterator:
+def _skip_pages(source: Iterator[PageImage], n: int) -> Iterator[PageImage]:
+    skipped = 0
+    for page in source:
+        if skipped < n:
+            skipped += 1
+            page.image.close()
+            continue
+        yield page
+
+
+class _EMPTY:
+    pass
+
+
+class Pipeline:
     def __init__(
         self,
         source: Iterator[PageImage],
-        queue_size: int,
+        batch_size: int,
         stop_event: threading.Event,
     ) -> None:
-        self._queue: queue.Queue[PageImage | None] = queue.Queue(maxsize=queue_size)
-        self._stop_event = stop_event
-        self._thread = threading.Thread(
-            target=self._producer, args=(source,), daemon=True,
+        self._page_queue: queue.Queue[PageImage | None] = queue.Queue(
+            maxsize=batch_size,
         )
-        self._thread.start()
+        self._batch_queue: queue.Queue[List[PageImage] | None] = queue.Queue(
+            maxsize=2,
+        )
+        self._stop_event = stop_event
+        self._error: BaseException | None = None
+        self._lock = threading.Lock()
+        self._peeked: List[PageImage] | None | type[_EMPTY] = _EMPTY
+        self._renderer = threading.Thread(
+            target=self._render, args=(source,), daemon=True,
+        )
+        self._batcher = threading.Thread(
+            target=self._assemble, args=(batch_size,), daemon=True,
+        )
 
-    def _producer(self, source: Iterator[PageImage]) -> None:
+    def start(self) -> None:
+        self._renderer.start()
+        self._batcher.start()
+
+    def _set_error(self, exc: BaseException) -> None:
+        with self._lock:
+            if self._error is None:
+                self._error = exc
+
+    def _check_error(self) -> None:
+        with self._lock:
+            if self._error is not None:
+                raise self._error
+
+    def _safe_put(self, q: queue.Queue, item: object) -> bool:
+        while not self._stop_event.is_set():
+            try:
+                q.put(item, timeout=0.5)
+                return True
+            except queue.Full:
+                continue
+        return False
+
+    def _safe_get(self, q: queue.Queue) -> object | None:
+        while not self._stop_event.is_set():
+            try:
+                return q.get(timeout=0.5)
+            except queue.Empty:
+                continue
+        return None
+
+    def _render(self, source: Iterator[PageImage]) -> None:
         try:
             for page in source:
-                while True:
-                    if self._stop_event.is_set():
-                        return
-                    try:
-                        self._queue.put(page, timeout=0.5)
-                        break
-                    except queue.Full:
-                        continue
-        except Exception:
-            LOGGER.exception("Prefetch producer failed unexpectedly")
+                if self._stop_event.is_set():
+                    return
+                if not self._safe_put(self._page_queue, page):
+                    return
+        except Exception as exc:
+            self._set_error(exc)
         finally:
-            try:
-                self._queue.put(None, timeout=2.0)
-            except queue.Full:
-                pass
+            self._safe_put(self._page_queue, None)
 
-    def __iter__(self) -> "PrefetchIterator":
+    def _assemble(self, batch_size: int) -> None:
+        try:
+            batch: List[PageImage] = []
+            while True:
+                item = self._safe_get(self._page_queue)
+                if item is None:
+                    break
+                batch.append(item)
+                if len(batch) >= batch_size:
+                    if not self._safe_put(self._batch_queue, batch):
+                        return
+                    batch = []
+            if batch:
+                if not self._safe_put(self._batch_queue, batch):
+                    return
+        except Exception as exc:
+            self._set_error(exc)
+        finally:
+            self._safe_put(self._batch_queue, None)
+
+    def __iter__(self) -> "Pipeline":
         return self
 
-    def __next__(self) -> PageImage:
-        item = self._queue.get()
+    def __next__(self) -> List[PageImage]:
+        if self._peeked is not _EMPTY:
+            val = self._peeked
+            self._peeked = _EMPTY
+            if val is None:
+                self._check_error()
+                raise StopIteration
+            return val
+
+        item = self._safe_get(self._batch_queue)
         if item is None:
+            self._check_error()
             raise StopIteration
+        self._check_error()
         return item
+
+    def try_peek_next(self) -> List[PageImage] | None:
+        if self._peeked is not _EMPTY:
+            return self._peeked if self._peeked is not None else None
+        try:
+            item = self._batch_queue.get_nowait()
+        except queue.Empty:
+            return None
+        self._peeked = item
+        if item is None:
+            return None
+        return item
+
+    def close(self) -> None:
+        self._stop_event.set()
+        for t in (self._renderer, self._batcher):
+            t.join(timeout=5.0)
+        for q in (self._page_queue, self._batch_queue):
+            while True:
+                try:
+                    item = q.get_nowait()
+                except queue.Empty:
+                    break
+                if item is None:
+                    continue
+                if isinstance(item, list):
+                    for page in item:
+                        page.image.close()
+                else:
+                    item.image.close()
+
+    def __enter__(self) -> "Pipeline":
+        self.start()
+        return self
+
+    def __exit__(self, *exc_info: object) -> None:
+        self.close()
 
 
 def _infer_with_retry(
@@ -139,51 +254,34 @@ def convert_pages_streaming(
     from .storage import load_checkpoints, save_batch_checkpoint
 
     stop_event = threading.Event()
-    pages = PrefetchIterator(pages, queue_size=2 * batch_size, stop_event=stop_event)
+    start = time.time()
+    page_count = 0
+    batch_count = 0
+    skip_pages = 0
 
-    try:
-        start = time.time()
-        page_count = 0
-        batch_count = 0
-        skip_pages = 0
+    if resume_from_checkpoint and checkpoint_dir is not None:
+        previous = load_checkpoints(checkpoint_dir)
+        if previous:
+            skip_pages = len(previous)
+            LOGGER.info("Resuming from checkpoint: skipping %d already-processed pages", skip_pages)
+            yield previous
 
-        if resume_from_checkpoint and checkpoint_dir is not None:
-            previous = load_checkpoints(checkpoint_dir)
-            if previous:
-                skip_pages = len(previous)
-                LOGGER.info("Resuming from checkpoint: skipping %d already-processed pages", skip_pages)
-                yield previous
+    source = _skip_pages(pages, skip_pages)
 
-        def limited_pages():
-            nonlocal page_count
-            skipped = 0
-            for page in pages:
-                if skipped < skip_pages:
-                    skipped += 1
-                    page.image.close()
-                    continue
-                if max_pages and page_count >= max_pages:
-                    break
-                page_count += 1
-                yield page
-
-        batches_iter = _batch_pages(limited_pages(), batch_size)
-        current_batch = next(batches_iter, None)
-
-        while current_batch is not None:
-            batch = current_batch
-            current_batch = next(batches_iter, None)
-
+    with Pipeline(source, batch_size, stop_event) as pipeline:
+        for batch in pipeline:
+            page_count += len(batch)
             batch_count += 1
             batch_start = time.time()
 
             LOGGER.info("Processing batch %d (%d pages)", batch_count, len(batch))
             markdowns = _infer_with_retry(client, batch, max_depth=max_retry_depth)
 
-            if current_batch is not None:
+            next_batch = pipeline.try_peek_next()
+            if next_batch is not None:
                 prep = getattr(client, "start_next_prep", None)
                 if prep is not None:
-                    prep([p.image for p in current_batch])
+                    prep([p.image for p in next_batch])
 
             batch_results: List[Tuple[str, str, PageResult]] = []
             for page, md in zip(batch, markdowns):
@@ -211,14 +309,15 @@ def convert_pages_streaming(
 
             yield batch_results
 
-        elapsed = time.time() - start
-        total_pages = page_count + skip_pages
-        LOGGER.info(
-            "Conversion complete: %d pages in %.1fs",
-            total_pages, elapsed,
-        )
-    finally:
-        stop_event.set()
+            if max_pages and page_count >= max_pages:
+                break
+
+    elapsed = time.time() - start
+    total_pages = page_count + skip_pages
+    LOGGER.info(
+        "Conversion complete: %d pages in %.1fs",
+        total_pages, elapsed,
+    )
 
 
 def convert_pages(
