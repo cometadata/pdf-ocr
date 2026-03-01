@@ -187,13 +187,13 @@ def _infer_with_retry(
     images = [p.image for p in batch]
     try:
         return client.infer_batch(images)
-    except Exception:
+    except Exception as exc:
         if max_depth <= 0 or len(batch) <= 1:
             LOGGER.error("Batch of %d failed at max depth", len(batch))
             return [""] * len(batch)
         LOGGER.warning(
-            "Batch of %d failed; subdividing (depth=%d)",
-            len(batch), max_depth - 1,
+            "Batch of %d failed: %s; subdividing (depth=%d)",
+            len(batch), exc, max_depth - 1, exc_info=True,
         )
         sub_size = max(1, len(batch) // subdivision)
         sub_batches = [batch[i:i + sub_size] for i in range(0, len(batch), sub_size)]

@@ -225,7 +225,7 @@ class TestVLLMOfflineEngine:
 
         call_args = mock_llm_instance.chat.call_args
         messages_list = call_args[1].get("messages") or call_args[0][0]
-        image_value = messages_list[0][0]["content"][0]["image_url"]["url"]
+        image_value = messages_list[0][0]["content"][0]["image_pil"]
         assert isinstance(image_value, Image.Image)
 
     @patch.dict("sys.modules", {"vllm": MagicMock()})
@@ -284,9 +284,9 @@ class TestVLLMOfflineEngine:
 
         call_args = mock_llm_instance.chat.call_args
         messages_list = call_args[1].get("messages") or call_args[0][0]
-        url = messages_list[0][0]["content"][0]["image_url"]["url"]
-        assert not isinstance(url, str)
-        assert isinstance(url, Image.Image)
+        image_value = messages_list[0][0]["content"][0]["image_pil"]
+        assert not isinstance(image_value, str)
+        assert isinstance(image_value, Image.Image)
 
     @patch.dict("sys.modules", {"vllm": MagicMock()})
     def test_multiple_batches_all_succeed(self):

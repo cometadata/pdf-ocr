@@ -106,7 +106,7 @@ class VLLMOfflineEngine:
 
         messages_list = [
             [{"role": "user", "content": [
-                {"type": "image_url", "image_url": {"url": image}},
+                {"type": "image_pil", "image_pil": image},
             ]}]
             for image in images
         ]
