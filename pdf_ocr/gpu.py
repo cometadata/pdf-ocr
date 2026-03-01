@@ -54,7 +54,12 @@ def recommend_engine_kwargs(gpus: List[GPUInfo]) -> Dict[str, Any]:
         max_num_batched_tokens = 4096
         gpu_memory_utilization = 0.85
 
-    return {
+    kwargs = {
         "max_num_batched_tokens": max_num_batched_tokens,
         "gpu_memory_utilization": gpu_memory_utilization,
     }
+
+    if len(gpus) > 1:
+        kwargs["data_parallel_size"] = len(gpus)
+
+    return kwargs

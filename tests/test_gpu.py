@@ -63,6 +63,11 @@ class TestRecommendEngineKwargs:
         kwargs = recommend_engine_kwargs([])
         assert kwargs == {}
 
+    def test_single_gpu_no_data_parallel(self):
+        gpus = [GPUInfo(index=0, name="A100", vram_mb=81920)]
+        kwargs = recommend_engine_kwargs(gpus)
+        assert "data_parallel_size" not in kwargs
+
     def test_multi_gpu_uses_first_gpu_vram(self):
         gpus = [
             GPUInfo(index=0, name="A100", vram_mb=81920),
@@ -70,3 +75,4 @@ class TestRecommendEngineKwargs:
         ]
         kwargs = recommend_engine_kwargs(gpus)
         assert kwargs["max_num_batched_tokens"] == 16384
+        assert kwargs["data_parallel_size"] == 2

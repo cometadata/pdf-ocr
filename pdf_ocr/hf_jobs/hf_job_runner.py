@@ -13,8 +13,6 @@
 # ]
 # ///
 
-"""Entrypoint for HuggingFace Jobs."""
-
 from __future__ import annotations
 
 import logging
@@ -37,6 +35,7 @@ def _log_memory():
                     return
     except Exception:
         pass
+
 
 
 def ensure_code_checkout() -> Path:

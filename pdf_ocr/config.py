@@ -1,5 +1,3 @@
-"""YAML-driven model configuration."""
-
 from __future__ import annotations
 
 import logging
@@ -29,7 +27,6 @@ class InferenceConfig:
     max_encode_workers: int = 8
     max_retry_depth: int = 3
     flush_every: int = 10
-    auto_parallel: bool = True
 
 
 @dataclass(frozen=True)

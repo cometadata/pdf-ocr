@@ -1,5 +1,3 @@
-"""Command-line interface for pdf_ocr."""
-
 from __future__ import annotations
 
 import argparse

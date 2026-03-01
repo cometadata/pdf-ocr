@@ -104,7 +104,6 @@ def convert(
                     hub_shard_index += 1
                     pending_hub_rows = []
 
-        # Flush remaining hub rows
         if output and not is_local_output and pending_hub_rows:
             from .storage import push_batch_to_hub
             push_batch_to_hub(

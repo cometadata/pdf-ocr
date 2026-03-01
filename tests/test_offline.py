@@ -404,16 +404,12 @@ class TestAsyncPipeline:
 
 
 class TestFactoryIntegration:
-    @patch("pdf_ocr.engine_factory.detect_gpus")
     @patch("pdf_ocr.engine_factory.VLLMOfflineEngine")
-    def test_init_module_uses_factory(self, MockEngine, mock_detect):
-        mock_detect.return_value = [GPUInfo(index=0, name="L4", vram_mb=24576)]
+    def test_init_module_uses_factory(self, MockEngine):
         mock_instance = MagicMock()
         mock_instance.infer_batch.return_value = ["# result"]
         MockEngine.return_value = mock_instance
 
-        # This tests that the import path works; the actual convert call
-        # is too complex to test here without more mocking.
         from pdf_ocr.engine_factory import create_offline_engine
         engine = create_offline_engine(ModelConfig(
             model_id="test/model",

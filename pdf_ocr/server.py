@@ -32,8 +32,7 @@ def encode_image(image: "Image.Image") -> str:
 
 def _format_arg(value: Any) -> str:
     if isinstance(value, float):
-        formatted = f"{value:.2f}"
-        return formatted
+        return f"{value:.2f}"
     return str(value)
 
 
@@ -180,7 +179,6 @@ class VLLMClient:
                 return ""
             return getattr(response.choices[0].message, "content", "") or ""
 
-        # Should not reach here, but satisfy type checker
         assert last_exc is not None
         raise last_exc
 
