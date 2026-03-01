@@ -151,81 +151,87 @@ def convert_pages_streaming(
 
     from .storage import load_checkpoints, save_batch_checkpoint
 
-    start = time.time()
-    page_count = 0
-    batch_count = 0
-    skip_pages = 0
+    stop_event = threading.Event()
+    pages = PrefetchIterator(pages, queue_size=2 * batch_size, stop_event=stop_event)
 
-    if resume_from_checkpoint and checkpoint_dir is not None:
-        previous = load_checkpoints(checkpoint_dir)
-        if previous:
-            skip_pages = len(previous)
-            LOGGER.info("Resuming from checkpoint: skipping %d already-processed pages", skip_pages)
-            yield previous
+    try:
+        start = time.time()
+        page_count = 0
+        batch_count = 0
+        skip_pages = 0
 
-    def limited_pages():
-        nonlocal page_count
-        skipped = 0
-        for page in pages:
-            if skipped < skip_pages:
-                skipped += 1
-                page.image.close()
-                continue
-            if max_pages and page_count >= max_pages:
-                break
-            page_count += 1
-            yield page
+        if resume_from_checkpoint and checkpoint_dir is not None:
+            previous = load_checkpoints(checkpoint_dir)
+            if previous:
+                skip_pages = len(previous)
+                LOGGER.info("Resuming from checkpoint: skipping %d already-processed pages", skip_pages)
+                yield previous
 
-    batches_iter = _batch_pages(limited_pages(), batch_size)
-    current_batch = next(batches_iter, None)
+        def limited_pages():
+            nonlocal page_count
+            skipped = 0
+            for page in pages:
+                if skipped < skip_pages:
+                    skipped += 1
+                    page.image.close()
+                    continue
+                if max_pages and page_count >= max_pages:
+                    break
+                page_count += 1
+                yield page
 
-    while current_batch is not None:
-        batch = current_batch
+        batches_iter = _batch_pages(limited_pages(), batch_size)
         current_batch = next(batches_iter, None)
 
-        batch_count += 1
-        batch_start = time.time()
+        while current_batch is not None:
+            batch = current_batch
+            current_batch = next(batches_iter, None)
 
-        LOGGER.info("Processing batch %d (%d pages)", batch_count, len(batch))
-        markdowns = _infer_with_retry(client, batch, max_depth=max_retry_depth)
+            batch_count += 1
+            batch_start = time.time()
 
-        if current_batch is not None:
-            prep = getattr(client, "start_next_prep", None)
-            if prep is not None:
-                prep([p.image for p in current_batch])
+            LOGGER.info("Processing batch %d (%d pages)", batch_count, len(batch))
+            markdowns = _infer_with_retry(client, batch, max_depth=max_retry_depth)
 
-        batch_results: List[Tuple[str, str, PageResult]] = []
-        for page, md in zip(batch, markdowns):
-            result = (
-                page.doc_id,
-                page.source,
-                PageResult(page_index=page.page_index, markdown=md.strip()),
+            if current_batch is not None:
+                prep = getattr(client, "start_next_prep", None)
+                if prep is not None:
+                    prep([p.image for p in current_batch])
+
+            batch_results: List[Tuple[str, str, PageResult]] = []
+            for page, md in zip(batch, markdowns):
+                result = (
+                    page.doc_id,
+                    page.source,
+                    PageResult(page_index=page.page_index, markdown=md.strip()),
+                )
+                batch_results.append(result)
+                page.image.close()
+
+            if checkpoint_dir is not None:
+                ckpt_start = time.time()
+                save_batch_checkpoint(batch_results, checkpoint_dir, batch_count - 1 + (skip_pages // max(batch_size, 1)))
+                LOGGER.info("Checkpoint saved in %.2fs", time.time() - ckpt_start)
+
+            batch_elapsed = time.time() - batch_start
+            LOGGER.info(
+                "Batch %d complete: %d pages in %.2fs (%.2f pages/s) | cumulative: %d pages in %.2fs (%.2f pages/s)",
+                batch_count, len(batch), batch_elapsed,
+                len(batch) / batch_elapsed if batch_elapsed > 0 else 0,
+                page_count, time.time() - start,
+                page_count / (time.time() - start) if (time.time() - start) > 0 else 0,
             )
-            batch_results.append(result)
-            page.image.close()
 
-        if checkpoint_dir is not None:
-            ckpt_start = time.time()
-            save_batch_checkpoint(batch_results, checkpoint_dir, batch_count - 1 + (skip_pages // max(batch_size, 1)))
-            LOGGER.info("Checkpoint saved in %.2fs", time.time() - ckpt_start)
+            yield batch_results
 
-        batch_elapsed = time.time() - batch_start
+        elapsed = time.time() - start
+        total_pages = page_count + skip_pages
         LOGGER.info(
-            "Batch %d complete: %d pages in %.2fs (%.2f pages/s) | cumulative: %d pages in %.2fs (%.2f pages/s)",
-            batch_count, len(batch), batch_elapsed,
-            len(batch) / batch_elapsed if batch_elapsed > 0 else 0,
-            page_count, time.time() - start,
-            page_count / (time.time() - start) if (time.time() - start) > 0 else 0,
+            "Conversion complete: %d pages in %.1fs",
+            total_pages, elapsed,
         )
-
-        yield batch_results
-
-    elapsed = time.time() - start
-    total_pages = page_count + skip_pages
-    LOGGER.info(
-        "Conversion complete: %d pages in %.1fs",
-        total_pages, elapsed,
-    )
+    finally:
+        stop_event.set()
 
 
 def convert_pages(
