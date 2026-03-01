@@ -121,12 +121,16 @@ def main() -> None:
 
     job_start = time.monotonic()
 
+    no_resume = os.environ.get("NO_RESUME", "false").lower() in {"true", "1", "yes"}
+
     total_pages = 0
     shard_index = 0
     completed_pages: set = set()
-    if hf_repo_id:
+    if hf_repo_id and not no_resume:
         from pdf_ocr.storage import load_hub_progress
         shard_index, completed_pages = load_hub_progress(hf_repo_id, token=hf_token)
+    elif hf_repo_id and no_resume:
+        LOGGER.info("Resume disabled (NO_RESUME); starting fresh")
 
     pages = load_pdfs(source, config, token=hf_token, completed_pages=completed_pages)
 
