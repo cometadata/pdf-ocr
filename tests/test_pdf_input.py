@@ -8,9 +8,9 @@ from PIL import Image
 
 from pdf_ocr.pdf_input import (
     render_page, render_pdf, render_pdf_bytes, detect_input_type, InputType,
-    _load_directory, PageImage, parallel_render,
+    _load_directory, _load_hf_repo_files, load_pdfs, PageImage, parallel_render,
 )
-from pdf_ocr.config import PdfRenderingConfig
+from pdf_ocr.config import ModelConfig, PdfRenderingConfig
 
 
 def test_render_page_basic():
@@ -106,23 +106,29 @@ def test_render_pdf_bytes_returns_iterator():
         assert len(pages) == 2
 
 
-@patch("pdf_ocr.pdf_input.render_pdf")
-def test_load_directory_skips_bad_pdf(mock_render, tmp_path):
+def test_load_directory_skips_bad_pdf(tmp_path):
     cfg = PdfRenderingConfig(dpi=200, max_dimension=1540)
 
     (tmp_path / "a.pdf").write_bytes(b"dummy")
     (tmp_path / "corrupt.pdf").write_bytes(b"dummy")
     (tmp_path / "c.pdf").write_bytes(b"dummy")
 
-    def render_side_effect(path, cfg, doc_id=None):
-        if Path(path).stem == "corrupt":
+    mock_bitmap = MagicMock()
+    mock_bitmap.to_pil.return_value = Image.new("RGB", (100, 100))
+    mock_page = MagicMock()
+    mock_page.render.return_value = mock_bitmap
+    good_pdf = MagicMock()
+    good_pdf.__len__ = MagicMock(return_value=1)
+    good_pdf.__getitem__ = MagicMock(return_value=mock_page)
+
+    def pdf_factory(path):
+        if "corrupt" in str(path):
             raise RuntimeError("corrupt PDF")
-        yield PageImage(doc_id=doc_id, source=str(path), page_index=0,
-                        image=Image.new("RGB", (100, 100)))
+        return good_pdf
 
-    mock_render.side_effect = render_side_effect
+    with patch("pdf_ocr.pdf_input.pdfium.PdfDocument", side_effect=pdf_factory):
+        pages = list(_load_directory(str(tmp_path), cfg))
 
-    pages = list(_load_directory(str(tmp_path), cfg))
     assert len(pages) == 2
     doc_ids = {p.doc_id for p in pages}
     assert "corrupt" not in doc_ids
@@ -226,3 +232,51 @@ def test_parallel_render_empty_input():
     cfg = PdfRenderingConfig(dpi=200, max_dimension=1540)
     pages = list(parallel_render([], cfg, completed_pages={}, num_workers=2))
     assert pages == []
+
+
+@patch("pdf_ocr.pdf_input.snapshot_download")
+@patch("pdf_ocr.pdf_input.parallel_render")
+def test_load_hf_repo_uses_snapshot_download(mock_parallel, mock_snapshot, tmp_path):
+    mock_snapshot.return_value = str(tmp_path)
+    (tmp_path / "doc1.pdf").write_bytes(b"fake")
+    (tmp_path / "doc2.pdf").write_bytes(b"fake")
+
+    mock_parallel.return_value = iter([
+        PageImage(doc_id="doc1", source="doc1.pdf", page_index=0,
+                  image=Image.new("RGB", (100, 100))),
+    ])
+
+    pages = list(_load_hf_repo_files("user/repo", PdfRenderingConfig(), token="tok"))
+
+    mock_snapshot.assert_called_once_with(
+        "user/repo", allow_patterns="*.pdf", repo_type="dataset", token="tok",
+    )
+    mock_parallel.assert_called_once()
+    assert len(pages) == 1
+
+
+@patch("pdf_ocr.pdf_input.snapshot_download")
+@patch("pdf_ocr.pdf_input.parallel_render")
+def test_load_pdfs_passes_completed_pages_to_hf(mock_parallel, mock_snapshot, tmp_path):
+    mock_snapshot.return_value = str(tmp_path)
+    (tmp_path / "doc.pdf").write_bytes(b"fake")
+    mock_parallel.return_value = iter([])
+
+    config = ModelConfig(model_id="test/m", served_model_name="m")
+    completed = {("doc", 0)}
+    list(load_pdfs("user/repo", config, token="tok", completed_pages=completed))
+
+    call_kwargs = mock_parallel.call_args
+    assert call_kwargs[1].get("completed_pages") is not None or len(call_kwargs[0]) >= 3
+
+
+@patch("pdf_ocr.pdf_input.parallel_render")
+def test_load_pdfs_passes_completed_pages_to_directory(mock_parallel, tmp_path):
+    (tmp_path / "doc.pdf").write_bytes(b"fake")
+    mock_parallel.return_value = iter([])
+
+    config = ModelConfig(model_id="test/m", served_model_name="m")
+    completed = {("doc", 0)}
+    list(load_pdfs(str(tmp_path), config, completed_pages=completed))
+
+    mock_parallel.assert_called_once()

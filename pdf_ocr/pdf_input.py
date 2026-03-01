@@ -15,6 +15,11 @@ from typing import Dict, Iterator, List, Optional, Set
 import pypdfium2 as pdfium
 from PIL import Image
 
+try:
+    from huggingface_hub import snapshot_download
+except ImportError:  # pragma: no cover
+    snapshot_download = None  # type: ignore[assignment]
+
 from .config import ModelConfig, PdfRenderingConfig
 
 LOGGER = logging.getLogger(__name__)
@@ -154,24 +159,35 @@ def _load_single_pdf(source: str, cfg: PdfRenderingConfig) -> Iterator[PageImage
     yield from render_pdf(source, cfg)
 
 
-def _load_directory(source: str, cfg: PdfRenderingConfig) -> Iterator[PageImage]:
+def _load_directory(
+    source: str,
+    cfg: PdfRenderingConfig,
+    completed_pages: Optional[Dict[str, Set[int]]] = None,
+    render_workers: int = 4,
+) -> Iterator[PageImage]:
     base = Path(source)
     pdf_files = sorted(base.rglob("*.pdf"))
     LOGGER.info("Found %d PDFs in %s", len(pdf_files), source)
-    for pdf_path in pdf_files:
-        doc_id = pdf_path.relative_to(base).with_suffix("").as_posix()
-        try:
-            yield from render_pdf(pdf_path, cfg, doc_id=doc_id)
-        except Exception:
-            LOGGER.warning("Failed to render %s, skipping document", pdf_path, exc_info=True)
+
+    items = [(p, p.relative_to(base).with_suffix("").as_posix()) for p in pdf_files]
+    yield from parallel_render(
+        items, cfg,
+        completed_pages=completed_pages or {},
+        num_workers=render_workers,
+    )
 
 
 def _load_hf_dataset(source: str, cfg: PdfRenderingConfig, pdf_column: Optional[str] = None,
-                     split: str = "train", token: Optional[str] = None) -> Iterator[PageImage]:
+                     split: str = "train", token: Optional[str] = None,
+                     completed_pages: Optional[Dict[str, Set[int]]] = None,
+                     render_workers: int = 4) -> Iterator[PageImage]:
     repo_id = source.removeprefix("hf://")
 
     try:
-        yield from _load_hf_repo_files(repo_id, cfg, token=token)
+        yield from _load_hf_repo_files(
+            repo_id, cfg, token=token,
+            completed_pages=completed_pages, render_workers=render_workers,
+        )
         return
     except Exception:
         pass
@@ -216,25 +232,30 @@ def _load_hf_dataset(source: str, cfg: PdfRenderingConfig, pdf_column: Optional[
             LOGGER.warning("Failed to render document %s, skipping", doc_id, exc_info=True)
 
 
-def _load_hf_repo_files(repo_id: str, cfg: PdfRenderingConfig, token: Optional[str] = None) -> Iterator[PageImage]:
-    from huggingface_hub import HfApi, hf_hub_download
+def _load_hf_repo_files(
+    repo_id: str,
+    cfg: PdfRenderingConfig,
+    token: Optional[str] = None,
+    completed_pages: Optional[Dict[str, Set[int]]] = None,
+    render_workers: int = 4,
+) -> Iterator[PageImage]:
+    local_dir = snapshot_download(
+        repo_id, allow_patterns="*.pdf", repo_type="dataset", token=token,
+    )
 
-    api = HfApi(token=token)
-    files = api.list_repo_files(repo_id, repo_type="dataset")
-    pdf_files = [f for f in files if f.lower().endswith(".pdf")]
+    pdf_paths = sorted(Path(local_dir).rglob("*.pdf"))
 
-    if not pdf_files:
+    if not pdf_paths:
         raise FileNotFoundError(f"No PDF files found in repo {repo_id}")
 
-    LOGGER.info("Found %d PDFs in HF repo %s", len(pdf_files), repo_id)
+    LOGGER.info("Found %d PDFs in HF repo %s", len(pdf_paths), repo_id)
 
-    for pdf_path in sorted(pdf_files):
-        try:
-            local_path = hf_hub_download(repo_id, pdf_path, repo_type="dataset", token=token)
-            doc_id = Path(pdf_path).with_suffix("").as_posix()
-            yield from render_pdf(local_path, cfg, doc_id=doc_id)
-        except Exception:
-            LOGGER.warning("Failed to render %s from %s, skipping document", pdf_path, repo_id, exc_info=True)
+    items = [(p, p.relative_to(local_dir).with_suffix("").as_posix()) for p in pdf_paths]
+    yield from parallel_render(
+        items, cfg,
+        completed_pages=completed_pages or {},
+        num_workers=render_workers,
+    )
 
 
 def _detect_pdf_column(ds, pdf_column: Optional[str] = None) -> Optional[str]:
@@ -250,14 +271,29 @@ def _detect_pdf_column(ds, pdf_column: Optional[str] = None) -> Optional[str]:
 
 
 def load_pdfs(source: str, config: ModelConfig, pdf_column: Optional[str] = None,
-              split: str = "train", token: Optional[str] = None) -> Iterator[PageImage]:
+              split: str = "train", token: Optional[str] = None,
+              completed_pages: Optional[Set] = None) -> Iterator[PageImage]:
     input_type = detect_input_type(source)
     LOGGER.info("Detected input type: %s for source: %s", input_type.value, source)
+
+    render_workers = config.inference.render_workers
+
+    # Convert set of (doc_id, page_index) to dict of {doc_id: {page_indices}}
+    completed_by_doc: Dict[str, Set[int]] = {}
+    if completed_pages:
+        for doc_id, page_index in completed_pages:
+            completed_by_doc.setdefault(doc_id, set()).add(page_index)
 
     if input_type == InputType.PDF_FILE:
         yield from _load_single_pdf(source, config.pdf_rendering)
     elif input_type == InputType.DIRECTORY:
-        yield from _load_directory(source, config.pdf_rendering)
+        yield from _load_directory(
+            source, config.pdf_rendering,
+            completed_pages=completed_by_doc, render_workers=render_workers,
+        )
     elif input_type == InputType.HF_DATASET:
-        yield from _load_hf_dataset(source, config.pdf_rendering, pdf_column=pdf_column,
-                                     split=split, token=token)
+        yield from _load_hf_dataset(
+            source, config.pdf_rendering, pdf_column=pdf_column,
+            split=split, token=token,
+            completed_pages=completed_by_doc, render_workers=render_workers,
+        )
