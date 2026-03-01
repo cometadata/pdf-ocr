@@ -263,7 +263,6 @@ class TestVLLMOfflineEngine:
 
     @patch.dict("sys.modules", {"vllm": MagicMock()})
     def test_no_base64_encoding(self):
-        """Verify no base64 or ThreadPoolExecutor usage."""
         from PIL import Image
         import sys
 
@@ -286,7 +285,6 @@ class TestVLLMOfflineEngine:
         call_args = mock_llm_instance.chat.call_args
         messages_list = call_args[1].get("messages") or call_args[0][0]
         url = messages_list[0][0]["content"][0]["image_url"]["url"]
-        # Must be PIL Image, NOT a base64 string
         assert not isinstance(url, str)
         assert isinstance(url, Image.Image)
 

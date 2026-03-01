@@ -39,7 +39,6 @@ def _log_memory():
 
 
 def ensure_code_checkout() -> Path:
-    """Download supplementary job code from HF Hub if JOB_CODE_REPO is set."""
     repo_id = os.environ.get("JOB_CODE_REPO")
     if not repo_id:
         return Path(".")

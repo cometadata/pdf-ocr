@@ -1,5 +1,3 @@
-"""PDF loading and page rendering for files, directories, and HF datasets."""
-
 from __future__ import annotations
 
 import enum
@@ -278,7 +276,6 @@ def load_pdfs(source: str, config: ModelConfig, pdf_column: Optional[str] = None
 
     render_workers = config.inference.render_workers
 
-    # Convert set of (doc_id, page_index) to dict of {doc_id: {page_indices}}
     completed_by_doc: Dict[str, Set[int]] = {}
     if completed_pages:
         for doc_id, page_index in completed_pages:

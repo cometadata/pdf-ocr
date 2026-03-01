@@ -75,13 +75,11 @@ def test_hf_job_runner_flush_every_env_var():
         from pdf_ocr.hf_jobs.hf_job_runner import main
         main()
 
-        # flush_every=2: flush at batch 2, 4, then final flush with batch 5
         assert mock_push.call_count == 3
 
 
 def test_log_memory_does_not_crash():
     from pdf_ocr.hf_jobs.hf_job_runner import _log_memory
-    # Should not raise on any platform (silently no-ops on macOS)
     _log_memory()
 
 
@@ -92,7 +90,7 @@ def test_hf_job_runner_flushes_on_exception():
         "HF_REPO_ID": "user/results",
         "HF_TOKEN": "hf_fake_token",
         "BACKEND": "offline",
-        "FLUSH_EVERY": "100",  # high so no mid-loop flush
+        "FLUSH_EVERY": "100",
     }
 
     fake_pages = [
@@ -114,10 +112,9 @@ def test_hf_job_runner_flushes_on_exception():
         from pdf_ocr.hf_jobs.hf_job_runner import main
         main()
 
-    # The finally block should have flushed the pending row
     mock_push.assert_called_once()
     call_args = mock_push.call_args
-    assert len(call_args[0][0]) == 1  # 1 pending row
+    assert len(call_args[0][0]) == 1
 
 
 def test_hf_job_runner_flush_failure_still_shuts_down():
@@ -154,7 +151,6 @@ def test_hf_job_runner_flush_failure_still_shuts_down():
         from pdf_ocr.hf_jobs.hf_job_runner import main
         main()
 
-    # Server should still be shut down even though flush failed
     mock_shutdown.assert_called_once_with(mock_server_process)
 
 
@@ -188,7 +184,6 @@ def test_hf_job_runner_passes_completed_pages_to_load_pdfs():
         from pdf_ocr.hf_jobs.hf_job_runner import main
         main()
 
-        # Verify completed_pages was passed to load_pdfs
         call_kwargs = mock_load.call_args
         assert "completed_pages" in call_kwargs[1] or len(call_kwargs[0]) > 2
         completed = call_kwargs[1].get("completed_pages") or call_kwargs[0][2]
