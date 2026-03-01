@@ -4,10 +4,13 @@ from __future__ import annotations
 
 import enum
 import logging
+import queue
+import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterator, List, Optional
+from typing import Dict, Iterator, List, Optional, Set
 
 import pypdfium2 as pdfium
 from PIL import Image
@@ -65,6 +68,72 @@ def render_pdf_bytes(data: bytes, cfg: PdfRenderingConfig, doc_id: str, source: 
         image = render_page(pdf[i], cfg)
         yield PageImage(doc_id=doc_id, source=source or doc_id, page_index=i, image=image)
     LOGGER.info("Rendered %d pages from %s in %.2fs", n_pages, doc_id, time.monotonic() - t0)
+
+
+def parallel_render(
+    pdf_items: List[tuple[Path, str]],
+    cfg: PdfRenderingConfig,
+    completed_pages: Dict[str, Set[int]],
+    num_workers: int = 4,
+    queue_size: int = 256,
+) -> Iterator[PageImage]:
+    if not pdf_items:
+        return
+
+    out_queue: queue.Queue[PageImage | None] = queue.Queue(maxsize=queue_size)
+    error: list[BaseException] = []
+    error_lock = threading.Lock()
+
+    def _render_one(item: tuple[Path, str]) -> None:
+        path, doc_id = item
+        try:
+            pdf = pdfium.PdfDocument(str(path))
+            n_pages = len(pdf)
+            doc_completed = completed_pages.get(doc_id, set())
+            if len(doc_completed) >= n_pages:
+                LOGGER.debug("Skipping fully completed doc %s (%d pages)", doc_id, n_pages)
+                return
+            t0 = time.monotonic()
+            rendered = 0
+            for i in range(n_pages):
+                if i in doc_completed:
+                    continue
+                image = render_page(pdf[i], cfg)
+                out_queue.put(PageImage(
+                    doc_id=doc_id, source=str(path), page_index=i, image=image,
+                ))
+                rendered += 1
+            LOGGER.info(
+                "Rendered %d pages from %s in %.2fs (skipped %d completed)",
+                rendered, doc_id, time.monotonic() - t0, len(doc_completed),
+            )
+        except Exception:
+            LOGGER.warning("Failed to render %s, skipping document", doc_id, exc_info=True)
+
+    def _producer() -> None:
+        try:
+            with ThreadPoolExecutor(max_workers=num_workers) as pool:
+                list(pool.map(_render_one, pdf_items))
+        except Exception as exc:
+            with error_lock:
+                error.append(exc)
+        finally:
+            out_queue.put(None)
+
+    producer = threading.Thread(target=_producer, daemon=True)
+    producer.start()
+
+    while True:
+        item = out_queue.get()
+        if item is None:
+            break
+        yield item
+
+    producer.join(timeout=5.0)
+
+    with error_lock:
+        if error:
+            raise error[0]
 
 
 def detect_input_type(source: str) -> InputType:

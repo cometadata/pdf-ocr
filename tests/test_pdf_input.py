@@ -1,12 +1,14 @@
 import pytest
+import threading
 import types
+from collections import defaultdict
 from pathlib import Path
-from unittest.mock import patch, MagicMock
+from unittest.mock import patch, MagicMock, call
 from PIL import Image
 
 from pdf_ocr.pdf_input import (
     render_page, render_pdf, render_pdf_bytes, detect_input_type, InputType,
-    _load_directory, PageImage,
+    _load_directory, PageImage, parallel_render,
 )
 from pdf_ocr.config import PdfRenderingConfig
 
@@ -124,3 +126,103 @@ def test_load_directory_skips_bad_pdf(mock_render, tmp_path):
     assert len(pages) == 2
     doc_ids = {p.doc_id for p in pages}
     assert "corrupt" not in doc_ids
+
+
+def test_parallel_render_yields_all_pages():
+    mock_bitmap = MagicMock()
+    mock_bitmap.to_pil.return_value = Image.new("RGB", (800, 1000))
+
+    mock_page = MagicMock()
+    mock_page.render.return_value = mock_bitmap
+
+    mock_pdf = MagicMock()
+    mock_pdf.__len__ = MagicMock(return_value=3)
+    mock_pdf.__getitem__ = MagicMock(return_value=mock_page)
+
+    cfg = PdfRenderingConfig(dpi=200, max_dimension=1540)
+
+    with patch("pdf_ocr.pdf_input.pdfium.PdfDocument", return_value=mock_pdf):
+        items = [(Path("/fake/a.pdf"), "a"), (Path("/fake/b.pdf"), "b")]
+        pages = list(parallel_render(items, cfg, completed_pages={}, num_workers=2))
+
+    assert len(pages) == 6
+    doc_ids = {p.doc_id for p in pages}
+    assert doc_ids == {"a", "b"}
+
+
+def test_parallel_render_skips_fully_completed_docs():
+    mock_bitmap = MagicMock()
+    mock_bitmap.to_pil.return_value = Image.new("RGB", (800, 1000))
+
+    mock_page = MagicMock()
+    mock_page.render.return_value = mock_bitmap
+
+    mock_pdf = MagicMock()
+    mock_pdf.__len__ = MagicMock(return_value=2)
+    mock_pdf.__getitem__ = MagicMock(return_value=mock_page)
+
+    cfg = PdfRenderingConfig(dpi=200, max_dimension=1540)
+
+    completed = {"a": {0, 1}}  # doc "a" fully completed (2 pages)
+    with patch("pdf_ocr.pdf_input.pdfium.PdfDocument", return_value=mock_pdf):
+        items = [(Path("/fake/a.pdf"), "a"), (Path("/fake/b.pdf"), "b")]
+        pages = list(parallel_render(items, cfg, completed_pages=completed, num_workers=2))
+
+    assert len(pages) == 2
+    assert all(p.doc_id == "b" for p in pages)
+
+
+def test_parallel_render_skips_individual_completed_pages():
+    mock_bitmap = MagicMock()
+    mock_bitmap.to_pil.return_value = Image.new("RGB", (800, 1000))
+
+    mock_page = MagicMock()
+    mock_page.render.return_value = mock_bitmap
+
+    mock_pdf = MagicMock()
+    mock_pdf.__len__ = MagicMock(return_value=3)
+    mock_pdf.__getitem__ = MagicMock(return_value=mock_page)
+
+    cfg = PdfRenderingConfig(dpi=200, max_dimension=1540)
+
+    completed = {"a": {0, 2}}  # pages 0 and 2 of doc "a" completed
+    with patch("pdf_ocr.pdf_input.pdfium.PdfDocument", return_value=mock_pdf):
+        items = [(Path("/fake/a.pdf"), "a")]
+        pages = list(parallel_render(items, cfg, completed_pages=completed, num_workers=1))
+
+    assert len(pages) == 1
+    assert pages[0].page_index == 1
+
+
+def test_parallel_render_survives_bad_pdf():
+    mock_bitmap = MagicMock()
+    mock_bitmap.to_pil.return_value = Image.new("RGB", (800, 1000))
+
+    mock_page = MagicMock()
+    mock_page.render.return_value = mock_bitmap
+
+    good_pdf = MagicMock()
+    good_pdf.__len__ = MagicMock(return_value=2)
+    good_pdf.__getitem__ = MagicMock(return_value=mock_page)
+
+    call_count = [0]
+    def pdf_factory(path):
+        call_count[0] += 1
+        if "bad" in str(path):
+            raise RuntimeError("corrupt PDF")
+        return good_pdf
+
+    cfg = PdfRenderingConfig(dpi=200, max_dimension=1540)
+
+    with patch("pdf_ocr.pdf_input.pdfium.PdfDocument", side_effect=pdf_factory):
+        items = [(Path("/fake/good.pdf"), "good"), (Path("/fake/bad.pdf"), "bad")]
+        pages = list(parallel_render(items, cfg, completed_pages={}, num_workers=2))
+
+    assert len(pages) == 2
+    assert all(p.doc_id == "good" for p in pages)
+
+
+def test_parallel_render_empty_input():
+    cfg = PdfRenderingConfig(dpi=200, max_dimension=1540)
+    pages = list(parallel_render([], cfg, completed_pages={}, num_workers=2))
+    assert pages == []
