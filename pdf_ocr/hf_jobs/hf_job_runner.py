@@ -121,7 +121,6 @@ def main() -> None:
         client = VLLMClient(base_url=base_url, config=config)
 
     job_start = time.monotonic()
-    pages = load_pdfs(source, config, token=hf_token)
 
     total_pages = 0
     shard_index = 0
@@ -130,19 +129,7 @@ def main() -> None:
         from pdf_ocr.storage import load_hub_progress
         shard_index, completed_pages = load_hub_progress(hf_repo_id, token=hf_token)
 
-    if completed_pages:
-        original_pages = pages
-        def _filter_completed(page_iter):
-            skipped = 0
-            for page in page_iter:
-                if (page.doc_id, page.page_index) in completed_pages:
-                    skipped += 1
-                    page.image.close()
-                    continue
-                yield page
-            if skipped:
-                LOGGER.info("Skipped %d already-completed pages", skipped)
-        pages = _filter_completed(original_pages)
+    pages = load_pdfs(source, config, token=hf_token, completed_pages=completed_pages)
 
     flush_every = int(os.environ.get("FLUSH_EVERY", "3"))
     batch_count = 0

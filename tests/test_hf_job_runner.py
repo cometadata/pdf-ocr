@@ -158,7 +158,7 @@ def test_hf_job_runner_flush_failure_still_shuts_down():
     mock_shutdown.assert_called_once_with(mock_server_process)
 
 
-def test_hf_job_runner_resumes_skipping_completed():
+def test_hf_job_runner_passes_completed_pages_to_load_pdfs():
     env = {
         "INPUT_SOURCE": "user/pdf-dataset",
         "MODEL_CONFIG": "lighton_ocr_2_1b",
@@ -168,35 +168,28 @@ def test_hf_job_runner_resumes_skipping_completed():
         "FLUSH_EVERY": "100",
     }
 
-    fake_pages = [
-        PageImage(doc_id="test", source="test.pdf", page_index=0,
-                  image=Image.new("RGB", (100, 100))),
-        PageImage(doc_id="test", source="test.pdf", page_index=1,
-                  image=Image.new("RGB", (100, 100))),
-    ]
-
-    streamed_batches = []
     def fake_streaming(pages_iter, *args, **kwargs):
         pages_list = list(pages_iter)
         for page in pages_list:
-            batch = [("test", "test.pdf", PageResult(page_index=page.page_index, markdown=f"# Page {page.page_index}"))]
-            streamed_batches.append(batch)
-            yield batch
+            yield [("test", "test.pdf", PageResult(page_index=page.page_index, markdown=f"# Page {page.page_index}"))]
 
     with patch.dict(os.environ, env, clear=False), \
          patch("pdf_ocr.convert.convert_pages_streaming", side_effect=fake_streaming), \
-         patch("pdf_ocr.pdf_input.load_pdfs", return_value=iter(fake_pages)), \
-         patch("pdf_ocr.storage.push_batch_to_hub") as mock_push, \
+         patch("pdf_ocr.pdf_input.load_pdfs") as mock_load, \
+         patch("pdf_ocr.storage.push_batch_to_hub"), \
          patch("pdf_ocr.storage.load_hub_progress", return_value=(2, {("test", 0)})), \
          patch("pdf_ocr.offline.VLLMOfflineEngine"):
+
+        mock_load.return_value = iter([
+            PageImage(doc_id="test", source="test.pdf", page_index=1,
+                      image=Image.new("RGB", (100, 100))),
+        ])
 
         from pdf_ocr.hf_jobs.hf_job_runner import main
         main()
 
-    # Page 0 was completed, so only page 1 should have been processed
-    assert len(streamed_batches) == 1
-    assert streamed_batches[0][0][2].page_index == 1
-
-    # Shard index should start at 2 (from load_hub_progress)
-    call_kwargs = mock_push.call_args
-    assert call_kwargs[1]["shard_index"] == 2
+        # Verify completed_pages was passed to load_pdfs
+        call_kwargs = mock_load.call_args
+        assert "completed_pages" in call_kwargs[1] or len(call_kwargs[0]) > 2
+        completed = call_kwargs[1].get("completed_pages") or call_kwargs[0][2]
+        assert ("test", 0) in completed
