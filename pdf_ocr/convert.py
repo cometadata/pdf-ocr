@@ -55,10 +55,6 @@ def _skip_pages(source: Iterator[PageImage], n: int) -> Iterator[PageImage]:
         yield page
 
 
-class _EMPTY:
-    pass
-
-
 class Pipeline:
     def __init__(
         self,
@@ -75,7 +71,6 @@ class Pipeline:
         self._stop_event = stop_event
         self._error: BaseException | None = None
         self._lock = threading.Lock()
-        self._peeked: List[PageImage] | None | type[_EMPTY] = _EMPTY
         self._renderer = threading.Thread(
             target=self._render, args=(source,), daemon=True,
         )
@@ -150,31 +145,11 @@ class Pipeline:
         return self
 
     def __next__(self) -> List[PageImage]:
-        if self._peeked is not _EMPTY:
-            val = self._peeked
-            self._peeked = _EMPTY
-            if val is None:
-                self._check_error()
-                raise StopIteration
-            return val
-
         item = self._safe_get(self._batch_queue)
         if item is None:
             self._check_error()
             raise StopIteration
         self._check_error()
-        return item
-
-    def try_peek_next(self) -> List[PageImage] | None:
-        if self._peeked is not _EMPTY:
-            return self._peeked if self._peeked is not None else None
-        try:
-            item = self._batch_queue.get_nowait()
-        except queue.Empty:
-            return None
-        self._peeked = item
-        if item is None:
-            return None
         return item
 
     def close(self) -> None:
@@ -276,12 +251,6 @@ def convert_pages_streaming(
 
             LOGGER.info("Processing batch %d (%d pages)", batch_count, len(batch))
             markdowns = _infer_with_retry(client, batch, max_depth=max_retry_depth)
-
-            next_batch = pipeline.try_peek_next()
-            if next_batch is not None:
-                prep = getattr(client, "start_next_prep", None)
-                if prep is not None:
-                    prep([p.image for p in next_batch])
 
             batch_results: List[Tuple[str, str, PageResult]] = []
             for page, md in zip(batch, markdowns):

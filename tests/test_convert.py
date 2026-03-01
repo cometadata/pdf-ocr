@@ -307,3 +307,11 @@ def test_pipeline_close_drains_images():
             p.image.close()
 
     assert len(closed_images) >= 3
+
+
+def test_pipeline_has_no_peek_method():
+    """try_peek_next was removed — Pipeline no longer supports peeking."""
+    stop = threading.Event()
+    pages = [_make_page("doc1", 0)]
+    with Pipeline(iter(pages), batch_size=4, stop_event=stop) as pipeline:
+        assert not hasattr(pipeline, "try_peek_next")
