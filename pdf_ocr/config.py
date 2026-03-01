@@ -23,8 +23,8 @@ class InferenceConfig:
     max_retries: int = 3
     retry_backoff: float = 2.0
     extra_body: Dict[str, Any] = field(default_factory=dict)
-    offline_batch_size: int = 32
-    max_encode_workers: int = 8
+    offline_batch_size: int = 128
+    render_workers: int = 4
     max_retry_depth: int = 3
     flush_every: int = 10
 
