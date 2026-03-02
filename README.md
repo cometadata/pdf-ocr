@@ -68,13 +68,19 @@ results = convert("./pdfs/", base_url="http://localhost:8000", output="./output/
 
 ## Model Configuration
 
-Models are configured via YAML files in `models/`. The bundled config (`lighton_ocr_2_1b`) uses [LightOnOCR-2-1B](https://huggingface.co/lightonai/LightOnOCR-2-1B). Custom configs can be passed by path:
+Models are configured via YAML files in `models/`. The bundled config (`lighton_ocr_2_1b`) uses [LightOnOCR-2-1B](https://huggingface.co/lightonai/LightOnOCR-2-1B). To use a different model, create a YAML config and pass it by path:
+
+```yaml
+# my_model.yaml — only model_id is required; everything else has defaults
+model_id: your-org/your-model
+```
 
 ```bash
 pdf_ocr paper.pdf --model ./my_model.yaml
+pdf_ocr ./pdfs/ --model ./my_model.yaml --backend offline --output ./output/
 ```
 
-Config structure:
+Full config reference (all fields shown with their defaults):
 
 ```yaml
 model_id: lightonai/LightOnOCR-2-1B
