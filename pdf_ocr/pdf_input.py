@@ -2,21 +2,23 @@ from __future__ import annotations
 
 import enum
 import logging
+import multiprocessing
 import queue
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, Iterator, List, Optional, Set
+from typing import Dict, Iterable, Iterator, List, Optional, Set
 
 import pypdfium2 as pdfium
 from PIL import Image
 
 try:
-    from huggingface_hub import snapshot_download
+    from huggingface_hub import HfApi, hf_hub_download
 except ImportError:  # pragma: no cover
-    snapshot_download = None  # type: ignore[assignment]
+    HfApi = None  # type: ignore[assignment,misc]
+    hf_hub_download = None  # type: ignore[assignment]
 
 from .config import ModelConfig, PdfRenderingConfig
 
@@ -73,55 +75,158 @@ def render_pdf_bytes(data: bytes, cfg: PdfRenderingConfig, doc_id: str, source: 
     LOGGER.info("Rendered %d pages from %s in %.2fs", n_pages, doc_id, time.monotonic() - t0)
 
 
-def parallel_render(
-    pdf_items: List[tuple[Path, str]],
-    cfg: PdfRenderingConfig,
-    completed_pages: Dict[str, Set[int]],
-    num_workers: int = 4,
-    queue_size: int = 256,
-) -> Iterator[PageImage]:
-    if not pdf_items:
-        return
+_RENDER_CHILD_TIMEOUT = 600
 
-    out_queue: queue.Queue[PageImage | None] = queue.Queue(maxsize=queue_size)
-    error: list[BaseException] = []
-    error_lock = threading.Lock()
 
-    def _render_one(item: tuple[Path, str]) -> None:
-        path, doc_id = item
+def _render_one_process(path_str, doc_id, cfg, completed_set, result_queue):
+    """Target for multiprocessing.Process — renders one PDF in an isolated child."""
+    import faulthandler
+    faulthandler.enable()
+    try:
+        pdf = pdfium.PdfDocument(path_str)
+        n_pages = len(pdf)
+        if len(completed_set) >= n_pages:
+            return
+        for i in range(n_pages):
+            if i in completed_set:
+                continue
+            image = render_page(pdf[i], cfg)
+            result_queue.put(PageImage(doc_id=doc_id, source=path_str, page_index=i, image=image))
+    except Exception:
+        LOGGER.warning("Failed to render %s in subprocess", doc_id, exc_info=True)
+
+
+def _render_one_isolated(item, cfg, completed_pages, out_queue, mp_ctx):
+    """Thread-level wrapper: spawns a subprocess for the pdfium work."""
+    path, doc_id = item
+    doc_completed = completed_pages.get(doc_id, set())
+    LOGGER.debug("Starting render of %s", doc_id)
+    t0 = time.monotonic()
+
+    result_queue = mp_ctx.Queue()
+    proc = mp_ctx.Process(
+        target=_render_one_process,
+        args=(str(path), doc_id, cfg, doc_completed, result_queue),
+    )
+    proc.start()
+
+    rendered = 0
+    timed_out = False
+    deadline = time.monotonic() + _RENDER_CHILD_TIMEOUT
+
+    while proc.is_alive():
+        if time.monotonic() > deadline:
+            timed_out = True
+            LOGGER.warning("Render of %s timed out after %ds, killing child", doc_id, _RENDER_CHILD_TIMEOUT)
+            proc.kill()
+            proc.join(timeout=5)
+            break
         try:
-            pdf = pdfium.PdfDocument(str(path))
-            n_pages = len(pdf)
-            doc_completed = completed_pages.get(doc_id, set())
-            if len(doc_completed) >= n_pages:
-                LOGGER.debug("Skipping fully completed doc %s (%d pages)", doc_id, n_pages)
-                return
-            t0 = time.monotonic()
-            rendered = 0
-            for i in range(n_pages):
-                if i in doc_completed:
-                    continue
-                image = render_page(pdf[i], cfg)
-                out_queue.put(PageImage(
-                    doc_id=doc_id, source=str(path), page_index=i, image=image,
-                ))
-                rendered += 1
+            page_image = result_queue.get(timeout=0.5)
+            out_queue.put(page_image)
+            rendered += 1
+        except queue.Empty:
+            continue
+
+    while True:
+        try:
+            page_image = result_queue.get_nowait()
+            out_queue.put(page_image)
+            rendered += 1
+        except queue.Empty:
+            break
+
+    if not timed_out:
+        if proc.exitcode and proc.exitcode < 0:
+            import signal as _signal
+            sig = -proc.exitcode
+            sig_name = _signal.Signals(sig).name if sig in _signal.Signals._value2member_map_ else str(sig)
+            LOGGER.warning(
+                "Render of %s crashed (signal %s), recovered %d pages",
+                doc_id, sig_name, rendered,
+            )
+        elif proc.exitcode and proc.exitcode > 0:
+            LOGGER.warning("Render of %s exited with code %d, recovered %d pages", doc_id, proc.exitcode, rendered)
+        else:
             LOGGER.info(
                 "Rendered %d pages from %s in %.2fs (skipped %d completed)",
                 rendered, doc_id, time.monotonic() - t0, len(doc_completed),
             )
-        except Exception:
-            LOGGER.warning("Failed to render %s, skipping document", doc_id, exc_info=True)
 
-    def _producer() -> None:
-        try:
-            with ThreadPoolExecutor(max_workers=num_workers) as pool:
-                list(pool.map(_render_one, pdf_items))
-        except Exception as exc:
-            with error_lock:
-                error.append(exc)
-        finally:
-            out_queue.put(None)
+    result_queue.close()
+    result_queue.join_thread()
+
+
+def parallel_render(
+    pdf_items: Iterable[tuple[Path, str]],
+    cfg: PdfRenderingConfig,
+    completed_pages: Dict[str, Set[int]],
+    num_workers: int = 4,
+    queue_size: int = 256,
+    _use_processes: bool = True,
+) -> Iterator[PageImage]:
+    out_queue: queue.Queue[PageImage | None] = queue.Queue(maxsize=queue_size)
+    error: list[BaseException] = []
+    error_lock = threading.Lock()
+
+    if _use_processes:
+        mp_ctx = multiprocessing.get_context("spawn")
+
+        def _producer() -> None:
+            try:
+                with ThreadPoolExecutor(max_workers=num_workers) as pool:
+                    futures = []
+                    for item in pdf_items:
+                        futures.append(
+                            pool.submit(_render_one_isolated, item, cfg, completed_pages, out_queue, mp_ctx)
+                        )
+                    for f in futures:
+                        f.result()
+            except Exception as exc:
+                with error_lock:
+                    error.append(exc)
+            finally:
+                out_queue.put(None)
+    else:
+        def _render_one(item: tuple[Path, str]) -> None:
+            path, doc_id = item
+            try:
+                pdf = pdfium.PdfDocument(str(path))
+                n_pages = len(pdf)
+                doc_completed = completed_pages.get(doc_id, set())
+                if len(doc_completed) >= n_pages:
+                    LOGGER.debug("Skipping fully completed doc %s (%d pages)", doc_id, n_pages)
+                    return
+                t0 = time.monotonic()
+                rendered = 0
+                for i in range(n_pages):
+                    if i in doc_completed:
+                        continue
+                    image = render_page(pdf[i], cfg)
+                    out_queue.put(PageImage(
+                        doc_id=doc_id, source=str(path), page_index=i, image=image,
+                    ))
+                    rendered += 1
+                LOGGER.info(
+                    "Rendered %d pages from %s in %.2fs (skipped %d completed)",
+                    rendered, doc_id, time.monotonic() - t0, len(doc_completed),
+                )
+            except Exception:
+                LOGGER.warning("Failed to render %s, skipping document", doc_id, exc_info=True)
+
+        def _producer() -> None:
+            try:
+                with ThreadPoolExecutor(max_workers=num_workers) as pool:
+                    futures = []
+                    for item in pdf_items:
+                        futures.append(pool.submit(_render_one, item))
+                    for f in futures:
+                        f.result()
+            except Exception as exc:
+                with error_lock:
+                    error.append(exc)
+            finally:
+                out_queue.put(None)
 
     producer = threading.Thread(target=_producer, daemon=True)
     producer.start()
@@ -192,7 +297,7 @@ def _load_hf_dataset(source: str, cfg: PdfRenderingConfig, pdf_column: Optional[
 
     from datasets import load_dataset
     try:
-        ds = load_dataset(repo_id, split=split, token=token)
+        ds = load_dataset(repo_id, split=split, token=token, streaming=True)
     except Exception as exc:
         raise ValueError(f"Could not load HF source {repo_id!r}: {exc}") from exc
 
@@ -203,7 +308,7 @@ def _load_hf_dataset(source: str, cfg: PdfRenderingConfig, pdf_column: Optional[
             f"Columns: {ds.column_names}. Use --pdf-column to specify."
         )
 
-    LOGGER.info("Using column %r from dataset %s (%d rows)", col, repo_id, len(ds))
+    LOGGER.info("Streaming column %r from dataset %s", col, repo_id)
 
     for idx, row in enumerate(ds):
         value = row[col]
@@ -237,20 +342,28 @@ def _load_hf_repo_files(
     completed_pages: Optional[Dict[str, Set[int]]] = None,
     render_workers: int = 4,
 ) -> Iterator[PageImage]:
-    local_dir = snapshot_download(
-        repo_id, allow_patterns="*.pdf", repo_type="dataset", token=token,
-    )
+    api = HfApi()
+    all_files = api.list_repo_files(repo_id, repo_type="dataset", token=token)
+    pdf_files = sorted(f for f in all_files if f.lower().endswith(".pdf"))
 
-    pdf_paths = sorted(Path(local_dir).rglob("*.pdf"))
-
-    if not pdf_paths:
+    if not pdf_files:
         raise FileNotFoundError(f"No PDF files found in repo {repo_id}")
 
-    LOGGER.info("Found %d PDFs in HF repo %s", len(pdf_paths), repo_id)
+    LOGGER.info("Found %d PDFs in HF repo %s (streaming downloads)", len(pdf_files), repo_id)
 
-    items = [(p, p.relative_to(local_dir).with_suffix("").as_posix()) for p in pdf_paths]
+    def _download_one(filename: str) -> tuple[Path, str]:
+        local_path = hf_hub_download(
+            repo_id, filename, repo_type="dataset", token=token,
+        )
+        doc_id = Path(filename).with_suffix("").as_posix()
+        return (Path(local_path), doc_id)
+
+    def _iter_downloads() -> Iterator[tuple[Path, str]]:
+        with ThreadPoolExecutor(max_workers=4) as dl_pool:
+            yield from dl_pool.map(_download_one, pdf_files)
+
     yield from parallel_render(
-        items, cfg,
+        _iter_downloads(), cfg,
         completed_pages=completed_pages or {},
         num_workers=render_workers,
     )

@@ -71,6 +71,9 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> None:
+    import faulthandler
+    faulthandler.enable()
+
     parser = build_parser()
     args = parser.parse_args(argv)
 

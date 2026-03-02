@@ -60,6 +60,9 @@ def ensure_code_checkout() -> Path:
 
 
 def main() -> None:
+    import faulthandler
+    faulthandler.enable()
+
     logging.basicConfig(
         level=os.environ.get("LOG_LEVEL", "INFO").upper(),
         format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
