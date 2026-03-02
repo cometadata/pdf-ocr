@@ -1,7 +1,7 @@
 import pytest
 from unittest.mock import patch, MagicMock
 
-from pdf_ocr.gpu import detect_gpus, GPUInfo, recommend_engine_kwargs
+from pdf_ocr.gpu import detect_gpus, GPUInfo, recommend_engine_kwargs, _gpu_count_from_env
 
 
 class TestDetectGpus:
@@ -34,10 +34,43 @@ class TestDetectGpus:
         assert len(result) == 4
 
     @patch("pdf_ocr.gpu.torch")
-    def test_import_error_returns_empty(self, mock_torch):
-        mock_torch.cuda.is_available.side_effect = RuntimeError("no CUDA")
+    def test_properties_failure_falls_back_to_count(self, mock_torch):
+        mock_torch.cuda.is_available.return_value = True
+        mock_torch.cuda.device_count.return_value = 4
+        mock_torch.cuda.get_device_properties.side_effect = RuntimeError("CUDA error")
+        result = detect_gpus()
+        assert len(result) == 4
+        assert all(g.name == "unknown" for g in result)
+        assert all(g.vram_mb == 0 for g in result)
+
+    @patch("pdf_ocr.gpu.torch", None)
+    def test_no_torch_returns_empty(self):
         result = detect_gpus()
         assert result == []
+
+
+class TestGpuCountFromEnv:
+    @patch.dict("os.environ", {"CUDA_VISIBLE_DEVICES": "0,1,2,3"})
+    def test_reads_cuda_visible_devices(self):
+        assert _gpu_count_from_env() == 4
+
+    @patch.dict("os.environ", {"CUDA_VISIBLE_DEVICES": "0"})
+    def test_single_device(self):
+        assert _gpu_count_from_env() == 1
+
+    @patch.dict("os.environ", {"CUDA_VISIBLE_DEVICES": ""})
+    @patch("pdf_ocr.gpu.torch")
+    def test_empty_env_falls_back_to_torch(self, mock_torch):
+        mock_torch.cuda.device_count.return_value = 2
+        assert _gpu_count_from_env() == 2
+
+    @patch.dict("os.environ", {}, clear=True)
+    @patch("pdf_ocr.gpu.torch", None)
+    def test_no_env_no_torch_returns_zero(self):
+        # Remove CUDA_VISIBLE_DEVICES if present
+        import os
+        os.environ.pop("CUDA_VISIBLE_DEVICES", None)
+        assert _gpu_count_from_env() == 0
 
 
 class TestRecommendEngineKwargs:
@@ -75,4 +108,14 @@ class TestRecommendEngineKwargs:
         ]
         kwargs = recommend_engine_kwargs(gpus)
         assert kwargs["max_num_batched_tokens"] == 16384
+        assert kwargs["data_parallel_size"] == 2
+
+    def test_unknown_vram_skips_batched_tokens(self):
+        gpus = [
+            GPUInfo(index=0, name="unknown", vram_mb=0),
+            GPUInfo(index=1, name="unknown", vram_mb=0),
+        ]
+        kwargs = recommend_engine_kwargs(gpus)
+        assert "max_num_batched_tokens" not in kwargs
+        assert "gpu_memory_utilization" not in kwargs
         assert kwargs["data_parallel_size"] == 2

@@ -61,12 +61,13 @@ class Pipeline:
         source: Iterator[PageImage],
         batch_size: int,
         stop_event: threading.Event,
+        prefetch_pages: int = 64,
     ) -> None:
         self._page_queue: queue.Queue[PageImage | None] = queue.Queue(
-            maxsize=batch_size,
+            maxsize=prefetch_pages,
         )
         self._batch_queue: queue.Queue[List[PageImage] | None] = queue.Queue(
-            maxsize=2,
+            maxsize=1,
         )
         self._stop_event = stop_event
         self._error: BaseException | None = None

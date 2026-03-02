@@ -161,8 +161,8 @@ def parallel_render(
     pdf_items: Iterable[tuple[Path, str]],
     cfg: PdfRenderingConfig,
     completed_pages: Dict[str, Set[int]],
-    num_workers: int = 4,
-    queue_size: int = 256,
+    num_workers: int = 2,
+    queue_size: int = 64,
     _use_processes: bool = True,
 ) -> Iterator[PageImage]:
     out_queue: queue.Queue[PageImage | None] = queue.Queue(maxsize=queue_size)
