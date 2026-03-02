@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import atexit
 import json
 import logging
 import multiprocessing as mp
@@ -181,7 +182,6 @@ class VLLMOfflineEngine:
                     input_q,
                     self._output_queue,
                 ),
-                daemon=True,
             )
             p.start()
             self._workers.append(p)
@@ -190,6 +190,7 @@ class VLLMOfflineEngine:
             "Spawned %d data-parallel workers in %.2fs",
             len(self._workers), time.monotonic() - t0,
         )
+        atexit.register(self.shutdown)
 
     def infer_batch(self, images: Sequence["Image.Image"]) -> List[str]:
         if not images:
@@ -288,6 +289,11 @@ class VLLMOfflineEngine:
             if p.is_alive():
                 LOGGER.warning("Worker %s did not exit in time, terminating", p.pid)
                 p.terminate()
+                p.join(timeout=5)
+            if p.is_alive():
+                LOGGER.warning("Worker %s still alive after terminate, killing", p.pid)
+                p.kill()
+                p.join(timeout=5)
 
         self._workers.clear()
         self._input_queues.clear()
