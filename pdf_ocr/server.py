@@ -36,7 +36,12 @@ def _format_arg(value: Any) -> str:
     return str(value)
 
 
-def build_vllm_command(config: ModelConfig, port: int = 8000, host: str = "0.0.0.0") -> List[str]:
+def build_vllm_command(
+    config: ModelConfig,
+    port: int = 8000,
+    host: str = "0.0.0.0",
+    data_parallel_size: int | None = None,
+) -> List[str]:
     cmd = [
         "vllm", "serve", config.model_id,
         "--served-model-name", config.served_model_name,
@@ -47,6 +52,8 @@ def build_vllm_command(config: ModelConfig, port: int = 8000, host: str = "0.0.0
         cmd.append(f"--{flag}")
         if value is not True:
             cmd.append(_format_arg(value))
+    if data_parallel_size is not None and data_parallel_size > 1:
+        cmd.extend(["--data-parallel-size", str(data_parallel_size)])
     return cmd
 
 
@@ -58,8 +65,13 @@ def _stream_output(pipe, prefix: str) -> None:
         pipe.close()
 
 
-def launch_vllm(config: ModelConfig, port: int = 8000, host: str = "0.0.0.0") -> subprocess.Popen:
-    cmd = build_vllm_command(config, port=port, host=host)
+def launch_vllm(
+    config: ModelConfig,
+    port: int = 8000,
+    host: str = "0.0.0.0",
+    data_parallel_size: int | None = None,
+) -> subprocess.Popen:
+    cmd = build_vllm_command(config, port=port, host=host, data_parallel_size=data_parallel_size)
     LOGGER.info("Launching vLLM server: %s", " ".join(cmd))
 
     process = subprocess.Popen(

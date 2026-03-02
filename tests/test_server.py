@@ -2,7 +2,7 @@ import asyncio
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-from pdf_ocr.server import build_vllm_command, VLLMClient
+from pdf_ocr.server import build_vllm_command, launch_vllm, VLLMClient
 from pdf_ocr.config import ModelConfig, InferenceConfig, PdfRenderingConfig
 
 
@@ -230,3 +230,49 @@ def test_async_completion_passes_extra_body():
 
     assert "extra_body" in captured_kwargs
     assert captured_kwargs["extra_body"]["skip_special_tokens"] is False
+
+
+def test_build_vllm_command_data_parallel_size():
+    config = ModelConfig(
+        model_id="test/model",
+        served_model_name="test",
+        vllm_args={"trust-remote-code": True},
+    )
+    cmd = build_vllm_command(config, data_parallel_size=4)
+    assert "--data-parallel-size" in cmd
+    idx = cmd.index("--data-parallel-size")
+    assert cmd[idx + 1] == "4"
+
+
+def test_build_vllm_command_data_parallel_size_one_omitted():
+    config = ModelConfig(
+        model_id="test/model",
+        served_model_name="test",
+    )
+    cmd = build_vllm_command(config, data_parallel_size=1)
+    assert "--data-parallel-size" not in cmd
+
+
+def test_build_vllm_command_data_parallel_size_none_omitted():
+    config = ModelConfig(
+        model_id="test/model",
+        served_model_name="test",
+    )
+    cmd = build_vllm_command(config, data_parallel_size=None)
+    assert "--data-parallel-size" not in cmd
+
+
+@patch("pdf_ocr.server.subprocess.Popen")
+def test_launch_vllm_passes_data_parallel_size(mock_popen):
+    mock_popen.return_value = MagicMock()
+    mock_popen.return_value.stdout = None
+    mock_popen.return_value.stderr = None
+    config = ModelConfig(
+        model_id="test/model",
+        served_model_name="test",
+    )
+    launch_vllm(config, data_parallel_size=4)
+    cmd = mock_popen.call_args[0][0]
+    assert "--data-parallel-size" in cmd
+    idx = cmd.index("--data-parallel-size")
+    assert cmd[idx + 1] == "4"

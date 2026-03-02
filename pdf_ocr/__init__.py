@@ -57,14 +57,38 @@ def convert(
         client = create_offline_engine(config)
     else:
         from .server import VLLMClient, launch_vllm, shutdown_server, wait_for_server
+        data_parallel_size = None
         if base_url is None:
+            from .gpu import get_physical_gpu_ids
+            gpu_ids = get_physical_gpu_ids()
+            has_tp = "tensor-parallel-size" in config.vllm_args
+            has_dp = "data-parallel-size" in config.vllm_args
+            if len(gpu_ids) > 1 and not has_tp and not has_dp:
+                data_parallel_size = len(gpu_ids)
+                LOGGER.info(
+                    "Auto-detected %d GPUs, using data-parallel-size=%d",
+                    len(gpu_ids), data_parallel_size,
+                )
             base_url = f"http://127.0.0.1:{port}"
-            server_process = launch_vllm(config, port=port, host=host)
+            server_process = launch_vllm(
+                config, port=port, host=host,
+                data_parallel_size=data_parallel_size,
+            )
             health_url = f"{base_url}/health"
             if not wait_for_server(health_url):
                 shutdown_server(server_process)
                 raise RuntimeError("vLLM server did not become ready in time")
         client = VLLMClient(base_url=base_url, config=config)
+
+        if data_parallel_size and data_parallel_size > 1 and batch_size is None:
+            effective_batch_size = min(
+                effective_batch_size * data_parallel_size,
+                config.inference.offline_batch_size,
+            )
+            LOGGER.info(
+                "Scaled batch size to %d for %d-way data parallelism",
+                effective_batch_size, data_parallel_size,
+            )
 
     try:
         from .convert import convert_pages_streaming, _group_by_document
