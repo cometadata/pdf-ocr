@@ -78,6 +78,7 @@ def _dp_worker(
     top_p: float,
     input_queue: mp.Queue,
     output_queue: mp.Queue,
+    worker_batch_size: int = 8,
 ) -> None:
     """Worker process for data-parallel inference on a single GPU."""
     os.environ["CUDA_VISIBLE_DEVICES"] = gpu_id
@@ -98,18 +99,23 @@ def _dp_worker(
 
         task_id, images = item
         try:
-            messages_list = [
-                [{"role": "user", "content": [
-                    {"type": "image_pil", "image_pil": image},
-                ]}]
-                for image in images
-            ]
-            outputs = llm.chat(
-                messages=messages_list,
-                sampling_params=sampling_params,
-            )
-            results = [o.outputs[0].text if o.outputs else "" for o in outputs]
-            output_queue.put((task_id, results, None))
+            all_results: List[str] = []
+            for start in range(0, len(images), worker_batch_size):
+                micro_batch = images[start:start + worker_batch_size]
+                messages_list = [
+                    [{"role": "user", "content": [
+                        {"type": "image_pil", "image_pil": image},
+                    ]}]
+                    for image in micro_batch
+                ]
+                outputs = llm.chat(
+                    messages=messages_list,
+                    sampling_params=sampling_params,
+                )
+                all_results.extend(
+                    o.outputs[0].text if o.outputs else "" for o in outputs
+                )
+            output_queue.put((task_id, all_results, None))
         except Exception as exc:
             output_queue.put((task_id, None, exc))
 
@@ -163,9 +169,14 @@ class VLLMOfflineEngine:
         )
         self._llm = None
         self._sampling_params = None
+        self._engine_kwargs = engine_kwargs
+        self._gpu_ids = gpu_ids
 
         ctx = mp.get_context("spawn")
+        self._ctx = ctx
         self._output_queue = ctx.Queue()
+
+        worker_batch_size = self.config.inference.worker_batch_size
 
         t0 = time.monotonic()
         for gpu_id in gpu_ids:
@@ -181,6 +192,7 @@ class VLLMOfflineEngine:
                     self.config.inference.top_p,
                     input_q,
                     self._output_queue,
+                    worker_batch_size,
                 ),
             )
             p.start()
@@ -191,6 +203,47 @@ class VLLMOfflineEngine:
             len(self._workers), time.monotonic() - t0,
         )
         atexit.register(self.shutdown)
+
+    def workers_healthy(self) -> bool:
+        """Return True if all data-parallel workers are alive (or single-GPU mode)."""
+        if not self._workers:
+            return True
+        return all(w.is_alive() for w in self._workers)
+
+    def _restart_worker(self, worker_idx: int) -> None:
+        """Terminate a dead worker and spawn a replacement."""
+        old = self._workers[worker_idx]
+        gpu_id = self._gpu_ids[worker_idx]
+
+        if old.is_alive():
+            old.terminate()
+            old.join(timeout=5)
+        if old.is_alive():
+            old.kill()
+            old.join(timeout=5)
+
+        new_input_q = self._ctx.Queue()
+        self._input_queues[worker_idx] = new_input_q
+
+        p = self._ctx.Process(
+            target=_dp_worker,
+            args=(
+                gpu_id,
+                self._engine_kwargs,
+                self.config.inference.max_tokens,
+                self.config.inference.temperature,
+                self.config.inference.top_p,
+                new_input_q,
+                self._output_queue,
+                self.config.inference.worker_batch_size,
+            ),
+        )
+        p.start()
+        self._workers[worker_idx] = p
+        LOGGER.warning(
+            "Restarted worker %d (GPU %s) with PID %d",
+            worker_idx, gpu_id, p.pid,
+        )
 
     def infer_batch(self, images: Sequence["Image.Image"]) -> List[str]:
         if not images:
@@ -231,6 +284,12 @@ class VLLMOfflineEngine:
         n_workers = len(self._workers)
         images_list = list(images)
 
+        # Restart any dead workers before dispatching
+        for i, w in enumerate(self._workers):
+            if not w.is_alive():
+                LOGGER.warning("Worker %d found dead before dispatch, restarting", i)
+                self._restart_worker(i)
+
         # Interleaved split for even distribution
         chunks: List[List] = [[] for _ in range(n_workers)]
         index_maps: List[List[int]] = [[] for _ in range(n_workers)]
@@ -252,10 +311,12 @@ class VLLMOfflineEngine:
             try:
                 task_id, worker_results, error = self._output_queue.get(timeout=300)
             except Exception:
-                # Check for dead workers
+                # Check for dead workers and restart them
                 dead = [i for i, w in enumerate(self._workers) if not w.is_alive()]
                 if dead:
-                    raise RuntimeError(f"Worker(s) {dead} died during inference")
+                    for i in dead:
+                        self._restart_worker(i)
+                    raise RuntimeError(f"Worker(s) {dead} died during inference (restarted)")
                 raise
 
             if error is not None:

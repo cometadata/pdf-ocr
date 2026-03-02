@@ -499,6 +499,162 @@ class TestShutdown:
         assert engine._input_queues == []
 
 
+class TestWorkersHealthy:
+    def test_single_gpu_always_healthy(self):
+        engine = object.__new__(VLLMOfflineEngine)
+        engine._workers = []
+        assert engine.workers_healthy() is True
+
+    def test_all_alive_returns_true(self):
+        engine = object.__new__(VLLMOfflineEngine)
+        engine._workers = [
+            MagicMock(is_alive=MagicMock(return_value=True)),
+            MagicMock(is_alive=MagicMock(return_value=True)),
+        ]
+        assert engine.workers_healthy() is True
+
+    def test_one_dead_returns_false(self):
+        engine = object.__new__(VLLMOfflineEngine)
+        engine._workers = [
+            MagicMock(is_alive=MagicMock(return_value=True)),
+            MagicMock(is_alive=MagicMock(return_value=False)),
+        ]
+        assert engine.workers_healthy() is False
+
+    def test_all_dead_returns_false(self):
+        engine = object.__new__(VLLMOfflineEngine)
+        engine._workers = [
+            MagicMock(is_alive=MagicMock(return_value=False)),
+            MagicMock(is_alive=MagicMock(return_value=False)),
+        ]
+        assert engine.workers_healthy() is False
+
+
+class TestRestartWorker:
+    def test_restart_replaces_dead_worker(self):
+        engine = object.__new__(VLLMOfflineEngine)
+        engine.config = ModelConfig(model_id="test/model", served_model_name="test-model")
+
+        old_worker = MagicMock()
+        old_worker.is_alive.return_value = False
+
+        mock_ctx = MagicMock()
+        new_process = MagicMock()
+        new_process.pid = 12345
+        mock_ctx.Process.return_value = new_process
+        new_queue = MagicMock()
+        mock_ctx.Queue.return_value = new_queue
+
+        engine._workers = [old_worker]
+        engine._input_queues = [MagicMock()]
+        engine._output_queue = MagicMock()
+        engine._ctx = mock_ctx
+        engine._gpu_ids = ["0"]
+        engine._engine_kwargs = {"model": "test/model"}
+
+        engine._restart_worker(0)
+
+        assert engine._workers[0] is new_process
+        assert engine._input_queues[0] is new_queue
+        new_process.start.assert_called_once()
+
+    def test_restart_terminates_alive_worker(self):
+        engine = object.__new__(VLLMOfflineEngine)
+        engine.config = ModelConfig(model_id="test/model", served_model_name="test-model")
+
+        old_worker = MagicMock()
+        # is_alive returns True on first call (triggers terminate), then False
+        old_worker.is_alive.side_effect = [True, False]
+
+        mock_ctx = MagicMock()
+        new_process = MagicMock()
+        new_process.pid = 99
+        mock_ctx.Process.return_value = new_process
+        mock_ctx.Queue.return_value = MagicMock()
+
+        engine._workers = [old_worker]
+        engine._input_queues = [MagicMock()]
+        engine._output_queue = MagicMock()
+        engine._ctx = mock_ctx
+        engine._gpu_ids = ["0"]
+        engine._engine_kwargs = {"model": "test/model"}
+
+        engine._restart_worker(0)
+
+        old_worker.terminate.assert_called_once()
+        assert engine._workers[0] is new_process
+
+
+class TestDataParallelDeadWorkerRestart:
+    def test_dead_worker_restarted_before_dispatch(self):
+        from PIL import Image
+
+        engine = object.__new__(VLLMOfflineEngine)
+        engine.config = ModelConfig(model_id="test/model", served_model_name="test-model")
+        engine._engine_kwargs = {"model": "test/model"}
+        engine._gpu_ids = ["0", "1"]
+
+        mock_ctx = MagicMock()
+        new_process = MagicMock()
+        new_process.pid = 999
+        new_process.is_alive.return_value = True
+        mock_ctx.Process.return_value = new_process
+        new_queue = MagicMock()
+        mock_ctx.Queue.return_value = new_queue
+        engine._ctx = mock_ctx
+
+        alive_worker = MagicMock()
+        alive_worker.is_alive.return_value = True
+        dead_worker = MagicMock()
+        dead_worker.is_alive.return_value = False
+
+        engine._workers = [alive_worker, dead_worker]
+        engine._input_queues = [MagicMock(), MagicMock()]
+        engine._output_queue = MagicMock()
+
+        # After restart, the dead worker is replaced; both return results
+        call_count = [0]
+        def mock_get(timeout=None):
+            call_count[0] += 1
+            if call_count[0] == 1:
+                return (0, ["r0"], None)
+            else:
+                return (1, ["r1"], None)
+
+        engine._output_queue.get = mock_get
+
+        images = [Image.new("RGB", (10, 10)) for _ in range(2)]
+        results = engine._infer_data_parallel(images)
+
+        # Worker 1 was replaced
+        assert engine._workers[1] is new_process
+        assert results == ["r0", "r1"]
+
+
+class TestMicroBatchInit:
+    @patch.dict("sys.modules", {"vllm": MagicMock()})
+    @patch("pdf_ocr.gpu.get_physical_gpu_ids", return_value=["0", "1"])
+    @patch("pdf_ocr.offline.mp")
+    def test_worker_batch_size_passed_to_worker(self, mock_mp, mock_gpu_ids):
+        mock_ctx = MagicMock()
+        mock_mp.get_context.return_value = mock_ctx
+        mock_process = MagicMock()
+        mock_ctx.Process.return_value = mock_process
+        mock_ctx.Queue.return_value = MagicMock()
+
+        config = ModelConfig(
+            model_id="test/model",
+            served_model_name="test-model",
+            inference=InferenceConfig(worker_batch_size=16),
+        )
+        engine = VLLMOfflineEngine(config)
+
+        # Check that worker_batch_size=16 was passed as the last positional arg
+        for call in mock_ctx.Process.call_args_list:
+            args = call[1]["args"]
+            assert args[-1] == 16  # worker_batch_size is the last arg
+
+
 class TestFactoryIntegration:
     @patch("pdf_ocr.engine_factory.VLLMOfflineEngine")
     def test_init_module_uses_factory(self, MockEngine):

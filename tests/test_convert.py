@@ -309,6 +309,37 @@ def test_pipeline_close_drains_images():
     assert len(closed_images) >= 3
 
 
+def test_infer_with_retry_fast_fails_on_dead_engine():
+    """When workers_healthy() returns False, retry should fast-fail without subdividing."""
+    batch = [_make_page("doc1", i) for i in range(4)]
+    mock_client = MagicMock()
+    mock_client.infer_batch.side_effect = RuntimeError("CUDA OOM")
+    mock_client.workers_healthy.return_value = False
+
+    results = _infer_with_retry(mock_client, batch, max_depth=3)
+
+    assert results == ["", "", "", ""]
+    # Should only have called infer_batch once (no subdivision)
+    assert mock_client.infer_batch.call_count == 1
+
+
+def test_infer_with_retry_subdivides_when_workers_healthy():
+    """When workers_healthy() returns True, retry should subdivide normally."""
+    batch = [_make_page("doc1", i) for i in range(4)]
+    mock_client = MagicMock()
+    mock_client.infer_batch.side_effect = [
+        RuntimeError("OOM"),
+        ["md0", "md1"],
+        ["md2", "md3"],
+    ]
+    mock_client.workers_healthy.return_value = True
+
+    results = _infer_with_retry(mock_client, batch, max_depth=3)
+
+    assert results == ["md0", "md1", "md2", "md3"]
+    assert mock_client.infer_batch.call_count == 3
+
+
 def test_pipeline_has_no_peek_method():
     stop = threading.Event()
     pages = [_make_page("doc1", 0)]

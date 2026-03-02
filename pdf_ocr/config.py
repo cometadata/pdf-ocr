@@ -27,6 +27,7 @@ class InferenceConfig:
     render_workers: int = 4
     max_retry_depth: int = 3
     flush_every: int = 10
+    worker_batch_size: int = 8
 
 
 @dataclass(frozen=True)

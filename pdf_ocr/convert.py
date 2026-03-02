@@ -192,6 +192,12 @@ def _infer_with_retry(
         if max_depth <= 0 or len(batch) <= 1:
             LOGGER.error("Batch of %d failed at max depth", len(batch))
             return [""] * len(batch)
+        if hasattr(client, "workers_healthy") and not client.workers_healthy():
+            LOGGER.error(
+                "Engine workers are dead; fast-failing batch of %d",
+                len(batch),
+            )
+            return [""] * len(batch)
         LOGGER.warning(
             "Batch of %d failed: %s; subdividing (depth=%d)",
             len(batch), exc, max_depth - 1, exc_info=True,
@@ -261,7 +267,7 @@ def convert_pages_streaming(
                     PageResult(page_index=page.page_index, markdown=md.strip()),
                 )
                 batch_results.append(result)
-                page.image.close()
+                page.image = None
 
             if checkpoint_dir is not None:
                 ckpt_start = time.time()
