@@ -276,3 +276,55 @@ def test_launch_vllm_passes_data_parallel_size(mock_popen):
     assert "--data-parallel-size" in cmd
     idx = cmd.index("--data-parallel-size")
     assert cmd[idx + 1] == "4"
+
+
+def test_vllm_client_stores_max_concurrency():
+    config = ModelConfig(
+        model_id="test/model",
+        served_model_name="test",
+        inference=InferenceConfig(max_concurrency=8),
+    )
+    client = VLLMClient(base_url="http://localhost:8000", config=config)
+    assert client.max_concurrency == 8
+
+
+def test_vllm_client_default_max_concurrency():
+    config = ModelConfig(
+        model_id="test/model",
+        served_model_name="test",
+    )
+    client = VLLMClient(base_url="http://localhost:8000", config=config)
+    assert client.max_concurrency == 4
+
+
+def test_async_infer_batch_limits_concurrency():
+    config = ModelConfig(
+        model_id="test/model",
+        served_model_name="test",
+        inference=InferenceConfig(max_concurrency=2, max_retries=1),
+    )
+    client = VLLMClient(base_url="http://localhost:8000", config=config)
+
+    in_flight = 0
+    max_in_flight = 0
+
+    async def mock_completion(payload):
+        nonlocal in_flight, max_in_flight
+        in_flight += 1
+        max_in_flight = max(max_in_flight, in_flight)
+        await asyncio.sleep(0.05)
+        in_flight -= 1
+        return "ok"
+
+    client._async_completion = mock_completion
+
+    payloads = [{"model": "test", "messages": [], "max_tokens": 100, "temperature": 0.2}] * 5
+
+    loop = asyncio.new_event_loop()
+    try:
+        results = loop.run_until_complete(client._async_infer_batch(payloads))
+    finally:
+        loop.close()
+
+    assert results == ["ok"] * 5
+    assert max_in_flight <= 2

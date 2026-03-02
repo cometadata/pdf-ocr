@@ -128,6 +128,7 @@ class VLLMClient:
         self.config = config
         self.max_retries = max(0, config.inference.max_retries)
         self.retry_backoff = max(0.0, config.inference.retry_backoff)
+        self.max_concurrency = config.inference.max_concurrency
         self._client = AsyncOpenAI(api_key="vllm", base_url=f"{self.base_url}/v1")
 
     def _prepare_payload(self, image: "Image.Image") -> Dict[str, Any]:
@@ -201,7 +202,13 @@ class VLLMClient:
         return self._run_async(self._async_infer_batch(payloads))
 
     async def _async_infer_batch(self, payloads: Sequence[Dict[str, Any]]) -> List[str]:
-        tasks = [asyncio.create_task(self._async_completion(p)) for p in payloads]
+        semaphore = asyncio.Semaphore(self.max_concurrency)
+
+        async def _throttled(p: Dict[str, Any]) -> str:
+            async with semaphore:
+                return await self._async_completion(p)
+
+        tasks = [asyncio.create_task(_throttled(p)) for p in payloads]
         return await asyncio.gather(*tasks)
 
     @staticmethod
