@@ -162,40 +162,36 @@ class TestBuildEngineKwargsAutoDefaults:
 
 
 class TestVLLMOfflineEngine:
-    @patch("pdf_ocr.offline.LLM", create=True)
-    @patch("pdf_ocr.offline.SamplingParams", create=True)
-    def test_init_passes_correct_kwargs(self, MockSamplingParams, MockLLM):
+    @patch.dict("sys.modules", {"vllm": MagicMock()})
+    def test_init_passes_correct_kwargs(self):
+        import sys
+
+        mock_vllm = sys.modules["vllm"]
         mock_llm_instance = MagicMock()
         mock_sp_instance = MagicMock()
+        mock_vllm.LLM.return_value = mock_llm_instance
+        mock_vllm.SamplingParams.return_value = mock_sp_instance
 
-        with patch.dict("sys.modules", {"vllm": MagicMock()}):
-            import sys
-            mock_vllm = sys.modules["vllm"]
-            mock_vllm.LLM = MockLLM
-            mock_vllm.SamplingParams = MockSamplingParams
-            MockLLM.return_value = mock_llm_instance
-            MockSamplingParams.return_value = mock_sp_instance
+        config = ModelConfig(
+            model_id="test/model",
+            served_model_name="test-model",
+            vllm_args={
+                "trust-remote-code": True,
+                "max-model-len": 4096,
+            },
+        )
+        engine = VLLMOfflineEngine(config)
 
-            config = ModelConfig(
-                model_id="test/model",
-                served_model_name="test-model",
-                vllm_args={
-                    "trust-remote-code": True,
-                    "max-model-len": 4096,
-                },
-            )
-            engine = VLLMOfflineEngine(config)
-
-            MockLLM.assert_called_once_with(
-                model="test/model",
-                trust_remote_code=True,
-                max_model_len=4096,
-            )
-            MockSamplingParams.assert_called_once_with(
-                max_tokens=4000,
-                temperature=0.2,
-                top_p=0.9,
-            )
+        mock_vllm.LLM.assert_called_once_with(
+            model="test/model",
+            trust_remote_code=True,
+            max_model_len=4096,
+        )
+        mock_vllm.SamplingParams.assert_called_once_with(
+            max_tokens=4000,
+            temperature=0.2,
+            top_p=0.9,
+        )
 
     @patch.dict("sys.modules", {"vllm": MagicMock()})
     def test_infer_batch_passes_pil_images_directly(self):
@@ -324,6 +320,183 @@ class TestVLLMOfflineEngine:
         )
         engine = VLLMOfflineEngine(config)
         assert not hasattr(engine, "start_next_prep")
+
+
+class TestDataParallelInit:
+    @patch.dict("sys.modules", {"vllm": MagicMock()})
+    @patch("pdf_ocr.gpu.get_physical_gpu_ids", return_value=["0"])
+    def test_single_gpu_uses_single_path(self, mock_gpu_ids):
+        import sys
+        mock_vllm = sys.modules["vllm"]
+        mock_vllm.LLM.return_value = MagicMock()
+
+        config = ModelConfig(model_id="test/model", served_model_name="test-model")
+        engine = VLLMOfflineEngine(config)
+
+        assert engine._llm is not None
+        assert engine._workers == []
+        assert engine._input_queues == []
+
+    @patch.dict("sys.modules", {"vllm": MagicMock()})
+    @patch("pdf_ocr.gpu.get_physical_gpu_ids", return_value=["0", "1", "2", "3"])
+    @patch("pdf_ocr.offline.mp")
+    def test_multi_gpu_spawns_workers(self, mock_mp, mock_gpu_ids):
+        mock_ctx = MagicMock()
+        mock_mp.get_context.return_value = mock_ctx
+        mock_process = MagicMock()
+        mock_ctx.Process.return_value = mock_process
+        mock_ctx.Queue.return_value = MagicMock()
+
+        config = ModelConfig(model_id="test/model", served_model_name="test-model")
+        engine = VLLMOfflineEngine(config)
+
+        assert engine._llm is None
+        assert len(engine._workers) == 4
+        assert len(engine._input_queues) == 4
+        assert mock_process.start.call_count == 4
+
+    @patch.dict("sys.modules", {"vllm": MagicMock()})
+    @patch("pdf_ocr.gpu.get_physical_gpu_ids", return_value=[])
+    def test_no_gpus_uses_single_path(self, mock_gpu_ids):
+        import sys
+        mock_vllm = sys.modules["vllm"]
+        mock_vllm.LLM.return_value = MagicMock()
+
+        config = ModelConfig(model_id="test/model", served_model_name="test-model")
+        engine = VLLMOfflineEngine(config)
+
+        assert engine._llm is not None
+        assert engine._workers == []
+
+
+class TestDataParallelInference:
+    def _make_dp_engine(self, n_workers=2):
+        """Create a VLLMOfflineEngine with mocked DP workers."""
+        engine = object.__new__(VLLMOfflineEngine)
+        engine.config = ModelConfig(model_id="test/model", served_model_name="test-model")
+        engine._llm = None
+        engine._sampling_params = None
+
+        engine._workers = [MagicMock(is_alive=MagicMock(return_value=True)) for _ in range(n_workers)]
+        engine._input_queues = [MagicMock() for _ in range(n_workers)]
+        engine._output_queue = MagicMock()
+
+        return engine
+
+    def test_interleaved_split_and_reassembly(self):
+        from PIL import Image
+
+        engine = self._make_dp_engine(n_workers=2)
+
+        images = [Image.new("RGB", (10, 10)) for _ in range(5)]
+        # Worker 0 gets indices [0, 2, 4], Worker 1 gets [1, 3]
+
+        def mock_get(timeout=None):
+            if not hasattr(mock_get, 'call_count'):
+                mock_get.call_count = 0
+            mock_get.call_count += 1
+            if mock_get.call_count == 1:
+                return (0, ["r0", "r2", "r4"], None)
+            else:
+                return (1, ["r1", "r3"], None)
+
+        engine._output_queue.get = mock_get
+
+        results = engine.infer_batch(images)
+        assert results == ["r0", "r1", "r2", "r3", "r4"]
+
+    def test_error_propagation_from_worker(self):
+        from PIL import Image
+
+        engine = self._make_dp_engine(n_workers=2)
+        images = [Image.new("RGB", (10, 10)) for _ in range(4)]
+
+        engine._output_queue.get.return_value = (0, None, ValueError("CUDA OOM"))
+
+        with pytest.raises(ValueError, match="CUDA OOM"):
+            engine.infer_batch(images)
+
+    def test_fewer_images_than_workers(self):
+        from PIL import Image
+
+        engine = self._make_dp_engine(n_workers=4)
+        images = [Image.new("RGB", (10, 10)) for _ in range(2)]
+        # Only workers 0 and 1 get work
+
+        def mock_get(timeout=None):
+            if not hasattr(mock_get, 'call_count'):
+                mock_get.call_count = 0
+            mock_get.call_count += 1
+            if mock_get.call_count == 1:
+                return (0, ["r0"], None)
+            else:
+                return (1, ["r1"], None)
+
+        engine._output_queue.get = mock_get
+
+        results = engine.infer_batch(images)
+        assert results == ["r0", "r1"]
+
+        # Workers 2 and 3 should not have received any work
+        engine._input_queues[2].put.assert_not_called()
+        engine._input_queues[3].put.assert_not_called()
+
+    def test_empty_batch_returns_empty(self):
+        engine = self._make_dp_engine(n_workers=2)
+        results = engine.infer_batch([])
+        assert results == []
+
+
+class TestShutdown:
+    def test_shutdown_sends_poison_pills_and_joins(self):
+        engine = object.__new__(VLLMOfflineEngine)
+        engine._workers = [MagicMock() for _ in range(3)]
+        engine._input_queues = [MagicMock() for _ in range(3)]
+        engine._output_queue = MagicMock()
+
+        for w in engine._workers:
+            w.is_alive.return_value = False
+
+        engine.shutdown()
+
+        for q in engine._input_queues:
+            q.put.assert_called_once_with(None)
+        for w in engine._workers:
+            w.join.assert_called_once_with(timeout=10)
+
+    def test_shutdown_terminates_stuck_workers(self):
+        engine = object.__new__(VLLMOfflineEngine)
+        stuck_worker = MagicMock()
+        stuck_worker.is_alive.return_value = True
+
+        engine._workers = [stuck_worker]
+        engine._input_queues = [MagicMock()]
+        engine._output_queue = MagicMock()
+
+        engine.shutdown()
+
+        stuck_worker.terminate.assert_called_once()
+
+    def test_shutdown_no_workers_is_noop(self):
+        engine = object.__new__(VLLMOfflineEngine)
+        engine._workers = []
+        engine._input_queues = []
+        engine._output_queue = None
+
+        engine.shutdown()  # Should not raise
+
+    def test_shutdown_clears_worker_lists(self):
+        engine = object.__new__(VLLMOfflineEngine)
+        engine._workers = [MagicMock()]
+        engine._input_queues = [MagicMock()]
+        engine._output_queue = MagicMock()
+
+        engine._workers[0].is_alive.return_value = False
+
+        engine.shutdown()
+
+        assert engine._workers == []
+        assert engine._input_queues == []
 
 
 class TestFactoryIntegration:

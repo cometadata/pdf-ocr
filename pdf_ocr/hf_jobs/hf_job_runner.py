@@ -178,6 +178,9 @@ def main() -> None:
             except Exception:
                 LOGGER.exception("Failed to flush pending rows on shutdown")
 
+        if effective_backend == "offline" and hasattr(client, 'shutdown'):
+            client.shutdown()
+
         if effective_backend != "offline":
             shutdown_server(server_process)
 

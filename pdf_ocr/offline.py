@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import json
 import logging
+import multiprocessing as mp
+import os
 import time
-from typing import TYPE_CHECKING, Any, Dict, List, Sequence
+from typing import TYPE_CHECKING, Any, Dict, List, Sequence, Tuple
 
 from .config import ModelConfig
 
@@ -67,12 +69,57 @@ def build_engine_kwargs(config: ModelConfig, auto_kwargs: Dict[str, Any] | None 
     return kwargs
 
 
+def _dp_worker(
+    gpu_id: str,
+    engine_kwargs: Dict[str, Any],
+    max_tokens: int,
+    temperature: float,
+    top_p: float,
+    input_queue: mp.Queue,
+    output_queue: mp.Queue,
+) -> None:
+    """Worker process for data-parallel inference on a single GPU."""
+    os.environ["CUDA_VISIBLE_DEVICES"] = gpu_id
+
+    from vllm import LLM, SamplingParams
+
+    llm = LLM(**engine_kwargs)
+    sampling_params = SamplingParams(
+        max_tokens=max_tokens,
+        temperature=temperature,
+        top_p=top_p,
+    )
+
+    while True:
+        item = input_queue.get()
+        if item is None:
+            break
+
+        task_id, images = item
+        try:
+            messages_list = [
+                [{"role": "user", "content": [
+                    {"type": "image_pil", "image_pil": image},
+                ]}]
+                for image in images
+            ]
+            outputs = llm.chat(
+                messages=messages_list,
+                sampling_params=sampling_params,
+            )
+            results = [o.outputs[0].text if o.outputs else "" for o in outputs]
+            output_queue.put((task_id, results, None))
+        except Exception as exc:
+            output_queue.put((task_id, None, exc))
+
+
 class VLLMOfflineEngine:
 
     def __init__(self, config: ModelConfig) -> None:
-        from vllm import LLM, SamplingParams
-
         self.config = config
+        self._workers: List[mp.Process] = []
+        self._input_queues: List[mp.Queue] = []
+        self._output_queue: mp.Queue | None = None
 
         if config.inference.extra_body:
             LOGGER.warning(
@@ -80,7 +127,7 @@ class VLLMOfflineEngine:
                 "it will be ignored for offline inference"
             )
 
-        from .gpu import detect_gpus, recommend_engine_kwargs
+        from .gpu import detect_gpus, get_physical_gpu_ids, recommend_engine_kwargs
 
         gpus = detect_gpus()
         auto_kwargs = recommend_engine_kwargs(gpus)
@@ -88,20 +135,71 @@ class VLLMOfflineEngine:
             LOGGER.info("Auto-detected GPU config: %s", auto_kwargs)
 
         engine_kwargs = build_engine_kwargs(config, auto_kwargs=auto_kwargs)
-        LOGGER.info("Initializing offline vLLM engine: %s", engine_kwargs)
+        gpu_ids = get_physical_gpu_ids()
+
+        if len(gpu_ids) > 1:
+            self._init_data_parallel(engine_kwargs, gpu_ids)
+        else:
+            self._init_single(engine_kwargs)
+
+    def _init_single(self, engine_kwargs: Dict[str, Any]) -> None:
+        from vllm import LLM, SamplingParams
+
+        LOGGER.info("Initializing offline vLLM engine (single GPU): %s", engine_kwargs)
         t0 = time.monotonic()
         self._llm = LLM(**engine_kwargs)
         LOGGER.info("vLLM engine initialized in %.2fs", time.monotonic() - t0)
         self._sampling_params = SamplingParams(
-            max_tokens=config.inference.max_tokens,
-            temperature=config.inference.temperature,
-            top_p=config.inference.top_p,
+            max_tokens=self.config.inference.max_tokens,
+            temperature=self.config.inference.temperature,
+            top_p=self.config.inference.top_p,
+        )
+
+    def _init_data_parallel(self, engine_kwargs: Dict[str, Any], gpu_ids: List[str]) -> None:
+        LOGGER.info(
+            "Initializing data-parallel vLLM across %d GPUs: %s | kwargs: %s",
+            len(gpu_ids), gpu_ids, engine_kwargs,
+        )
+        self._llm = None
+        self._sampling_params = None
+
+        ctx = mp.get_context("spawn")
+        self._output_queue = ctx.Queue()
+
+        t0 = time.monotonic()
+        for gpu_id in gpu_ids:
+            input_q = ctx.Queue()
+            self._input_queues.append(input_q)
+            p = ctx.Process(
+                target=_dp_worker,
+                args=(
+                    gpu_id,
+                    engine_kwargs,
+                    self.config.inference.max_tokens,
+                    self.config.inference.temperature,
+                    self.config.inference.top_p,
+                    input_q,
+                    self._output_queue,
+                ),
+                daemon=True,
+            )
+            p.start()
+            self._workers.append(p)
+
+        LOGGER.info(
+            "Spawned %d data-parallel workers in %.2fs",
+            len(self._workers), time.monotonic() - t0,
         )
 
     def infer_batch(self, images: Sequence["Image.Image"]) -> List[str]:
         if not images:
             return []
 
+        if self._workers:
+            return self._infer_data_parallel(images)
+        return self._infer_single(images)
+
+    def _infer_single(self, images: Sequence["Image.Image"]) -> List[str]:
         t0 = time.monotonic()
 
         messages_list = [
@@ -126,3 +224,77 @@ class VLLMOfflineEngine:
             len(images) / (t_infer - t0),
         )
         return results
+
+    def _infer_data_parallel(self, images: Sequence["Image.Image"]) -> List[str]:
+        t0 = time.monotonic()
+        n_workers = len(self._workers)
+        images_list = list(images)
+
+        # Interleaved split for even distribution
+        chunks: List[List] = [[] for _ in range(n_workers)]
+        index_maps: List[List[int]] = [[] for _ in range(n_workers)]
+        for i, img in enumerate(images_list):
+            worker_idx = i % n_workers
+            chunks[worker_idx].append(img)
+            index_maps[worker_idx].append(i)
+
+        # Dispatch to workers
+        tasks_sent = 0
+        for worker_idx, chunk in enumerate(chunks):
+            if chunk:
+                self._input_queues[worker_idx].put((worker_idx, chunk))
+                tasks_sent += 1
+
+        # Collect results
+        results = [""] * len(images_list)
+        for _ in range(tasks_sent):
+            try:
+                task_id, worker_results, error = self._output_queue.get(timeout=300)
+            except Exception:
+                # Check for dead workers
+                dead = [i for i, w in enumerate(self._workers) if not w.is_alive()]
+                if dead:
+                    raise RuntimeError(f"Worker(s) {dead} died during inference")
+                raise
+
+            if error is not None:
+                raise error
+
+            for local_idx, global_idx in enumerate(index_maps[task_id]):
+                results[global_idx] = worker_results[local_idx]
+
+        t_infer = time.monotonic()
+        LOGGER.info(
+            "Data-parallel inference: %d images across %d GPUs | %.2fs | %.2f pages/s",
+            len(images_list), n_workers,
+            t_infer - t0,
+            len(images_list) / (t_infer - t0),
+        )
+        return results
+
+    def shutdown(self) -> None:
+        """Shut down worker processes cleanly."""
+        if not self._workers:
+            return
+
+        for q in self._input_queues:
+            try:
+                q.put(None)
+            except Exception:
+                pass
+
+        for p in self._workers:
+            p.join(timeout=10)
+            if p.is_alive():
+                LOGGER.warning("Worker %s did not exit in time, terminating", p.pid)
+                p.terminate()
+
+        self._workers.clear()
+        self._input_queues.clear()
+        LOGGER.info("All data-parallel workers shut down")
+
+    def __del__(self) -> None:
+        try:
+            self.shutdown()
+        except Exception:
+            pass

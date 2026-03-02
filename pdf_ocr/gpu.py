@@ -45,13 +45,29 @@ def detect_gpus() -> List[GPUInfo]:
             gpus.append(GPUInfo(
                 index=i,
                 name=str(props.name),
-                vram_mb=props.total_mem // (1024 * 1024),
+                vram_mb=props.total_memory // (1024 * 1024),
             ))
         return gpus
     except Exception:
         LOGGER.warning("GPU property detection failed, falling back to device count", exc_info=True)
         count = _gpu_count_from_env()
         return [GPUInfo(index=i, name="unknown", vram_mb=0) for i in range(count)]
+
+
+def get_physical_gpu_ids() -> List[str]:
+    """Return physical GPU IDs from CUDA_VISIBLE_DEVICES or torch device count."""
+    cvd = os.environ.get("CUDA_VISIBLE_DEVICES")
+    if cvd is not None:
+        devices = [d.strip() for d in cvd.split(",") if d.strip()]
+        if devices:
+            return devices
+    if torch is not None:
+        try:
+            count = torch.cuda.device_count()
+            return [str(i) for i in range(count)]
+        except Exception:
+            pass
+    return []
 
 
 def recommend_engine_kwargs(gpus: List[GPUInfo]) -> Dict[str, Any]:
@@ -72,8 +88,5 @@ def recommend_engine_kwargs(gpus: List[GPUInfo]) -> Dict[str, Any]:
         else:
             kwargs["max_num_batched_tokens"] = 4096
             kwargs["gpu_memory_utilization"] = 0.85
-
-    if len(gpus) > 1:
-        kwargs["data_parallel_size"] = len(gpus)
 
     return kwargs
