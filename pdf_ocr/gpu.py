@@ -80,7 +80,7 @@ def recommend_engine_kwargs(gpus: List[GPUInfo]) -> Dict[str, Any]:
     vram_mb = gpus[0].vram_mb
     if vram_mb > 0:
         if vram_mb >= 131072:  # 128 GB+ (H200, etc.)
-            kwargs["max_num_batched_tokens"] = 32768
+            kwargs["max_num_batched_tokens"] = 16384
             kwargs["gpu_memory_utilization"] = 0.95
         elif vram_mb >= 65536:  # 64 GB+
             kwargs["max_num_batched_tokens"] = 16384
