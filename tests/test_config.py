@@ -113,7 +113,7 @@ def test_backend_with_overrides():
 def test_new_inference_fields_defaults():
     config = load_config("lighton_ocr_2_1b")
     assert config.inference.offline_batch_size == 128
-    assert config.inference.render_workers == 4
+    assert config.inference.render_workers == 8
     assert config.inference.max_retry_depth == 3
     assert config.inference.flush_every == 10
 
