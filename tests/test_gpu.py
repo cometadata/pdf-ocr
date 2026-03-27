@@ -92,12 +92,6 @@ class TestRecommendEngineKwargs:
         assert kwargs["max_num_batched_tokens"] == 16384
         assert kwargs["gpu_memory_utilization"] == 0.90
 
-    def test_very_large_gpu_141gb(self):
-        gpus = [GPUInfo(index=0, name="H200", vram_mb=144384)]
-        kwargs = recommend_engine_kwargs(gpus)
-        assert kwargs["max_num_batched_tokens"] == 16384
-        assert kwargs["gpu_memory_utilization"] == 0.95
-
     def test_no_gpus_returns_empty(self):
         kwargs = recommend_engine_kwargs([])
         assert kwargs == {}

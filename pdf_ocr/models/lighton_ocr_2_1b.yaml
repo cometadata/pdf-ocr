@@ -7,6 +7,7 @@ vllm_args:
   mm-processor-cache-gb: 0
   enable-chunked-prefill: true
   max-model-len: 4096
+  gpu-memory-utilization: 0.90
   trust-remote-code: true
 
 inference:
