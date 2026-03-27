@@ -7,7 +7,6 @@ vllm_args:
   mm-processor-cache-gb: 0
   enable-chunked-prefill: true
   max-model-len: 4096
-  gpu-memory-utilization: 0.90
   trust-remote-code: true
 
 inference:
@@ -20,7 +19,7 @@ inference:
   max_retries: 3
   retry_backoff: 2.0
   offline_batch_size: 128
-  render_workers: 4
+  render_workers: 8
   max_retry_depth: 3
   flush_every: 10
 

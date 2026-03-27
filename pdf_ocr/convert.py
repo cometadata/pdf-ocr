@@ -67,7 +67,7 @@ class Pipeline:
             maxsize=prefetch_pages,
         )
         self._batch_queue: queue.Queue[List[PageImage] | None] = queue.Queue(
-            maxsize=1,
+            maxsize=2,
         )
         self._stop_event = stop_event
         self._error: BaseException | None = None
@@ -250,7 +250,8 @@ def convert_pages_streaming(
 
     source = _skip_pages(pages, skip_pages)
 
-    with Pipeline(source, batch_size, stop_event) as pipeline:
+    prefetch = max(64, batch_size * 3)
+    with Pipeline(source, batch_size, stop_event, prefetch_pages=prefetch) as pipeline:
         for batch in pipeline:
             page_count += len(batch)
             batch_count += 1
