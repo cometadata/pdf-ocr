@@ -15,7 +15,7 @@ inference:
   temperature: 0.2
   top_p: 0.9
   batch_size: 4
-  max_concurrency: 64
+  max_concurrency: 32
   request_timeout: 120
   max_retries: 3
   retry_backoff: 2.0
