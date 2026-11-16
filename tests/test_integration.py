@@ -46,9 +46,13 @@ def test_full_pipeline_with_local_output(tmp_path):
     assert "<!-- page 1 -->" in content
 
 
-def test_config_loads_all_bundled():
-    config = load_config("lighton_ocr_2_1b")
-    assert config.model_id == "lightonai/LightOnOCR-2-1B"
+@pytest.mark.parametrize("name, model_id", [
+    ("lighton_ocr_2_1b", "lightonai/LightOnOCR-2-1B"),
+    ("lighton_ocr_3_0_8b", "lightonai/LightOnOCR-3-0.8B"),
+])
+def test_config_loads_all_bundled(name, model_id):
+    config = load_config(name)
+    assert config.model_id == model_id
     assert config.vllm_args  # Non-empty
     assert config.inference.max_tokens > 0
     assert config.pdf_rendering.dpi > 0

@@ -41,7 +41,7 @@ results = convert("./pdfs/", base_url="http://localhost:8000", output="./output/
 | Flag | Description |
 |---|---|
 | `source` | PDF file, directory, or HF dataset reference |
-| `--model` | Model config name, HF model ID, or YAML config path (default: `lighton_ocr_2_1b`) |
+| `--model` | Model config name, HF model ID, or YAML config path (default: `lighton_ocr_3_0_8b`) |
 | `--output`, `-o` | Local output directory |
 | `--hf-repo` | HF repo ID to push results to |
 | `--private` | Create private HF dataset (with `--hf-repo`) |
@@ -55,7 +55,7 @@ results = convert("./pdfs/", base_url="http://localhost:8000", output="./output/
 
 ## Model Configuration
 
-Models are configured via YAML files in `models/`. The bundled config (`lighton_ocr_2_1b`) uses [LightOnOCR-2-1B](https://huggingface.co/lightonai/LightOnOCR-2-1B). Custom configs can be passed by path:
+Models are configured via YAML files in `models/`. The default bundled config (`lighton_ocr_3_0_8b`) uses [LightOnOCR-3-0.8B](https://huggingface.co/lightonai/LightOnOCR-3-0.8B) and needs vLLM 0.30.0; `lighton_ocr_2_1b` uses [LightOnOCR-2-1B](https://huggingface.co/lightonai/LightOnOCR-2-1B). Custom configs can be passed by path:
 
 ```bash
 python -m pdf_ocr paper.pdf --model ./my_model.yaml
@@ -95,5 +95,6 @@ pdf_ocr/
 ├── server.py        # vLLM server lifecycle and inference client
 ├── storage.py       # Output to local files or HF Hub
 └── models/
-    └── lighton_ocr_2_1b.yaml
+    ├── lighton_ocr_2_1b.yaml
+    └── lighton_ocr_3_0_8b.yaml
 ```

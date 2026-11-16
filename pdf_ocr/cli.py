@@ -18,8 +18,8 @@ def build_parser() -> argparse.ArgumentParser:
         help="PDF file, directory, or HuggingFace dataset reference",
     )
     parser.add_argument(
-        "--model", default="lighton_ocr_2_1b",
-        help="Model config name, HF model ID, or path to YAML config (default: lighton_ocr_2_1b)",
+        "--model", default="lighton_ocr_3_0_8b",
+        help="Model config name, HF model ID, or path to YAML config (default: lighton_ocr_3_0_8b)",
     )
     parser.add_argument(
         "--output", "-o", default=None,

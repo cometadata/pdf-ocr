@@ -87,7 +87,7 @@ def main() -> None:
     if not source:
         raise RuntimeError("INPUT_SOURCE environment variable must be set")
 
-    model_config_name = os.environ.get("MODEL_CONFIG", "lighton_ocr_2_1b")
+    model_config_name = os.environ.get("MODEL_CONFIG", "lighton_ocr_3_0_8b")
     hf_repo_id = os.environ.get("HF_REPO_ID")
     hf_token = os.environ.get("HF_TOKEN")
     private = os.environ.get("PRIVATE", "false").lower() in {"true", "1", "yes"}

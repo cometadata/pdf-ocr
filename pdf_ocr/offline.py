@@ -25,6 +25,7 @@ _SERVER_ONLY_ARGS = frozenset({
     "root-path",
     "response-role",
     "chat-template",
+    "default-chat-template-kwargs",
 })
 
 _NEGATION_FLAGS = frozenset({

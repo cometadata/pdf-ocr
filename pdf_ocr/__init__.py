@@ -11,7 +11,7 @@ LOGGER = logging.getLogger(__name__)
 
 def convert(
     source: str,
-    model: str = "lighton_ocr_2_1b",
+    model: str = "lighton_ocr_3_0_8b",
     *,
     output: Optional[str] = None,
     private: bool = False,

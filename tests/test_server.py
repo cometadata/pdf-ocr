@@ -57,6 +57,18 @@ def test_build_vllm_command_string_values():
     assert cmd[idx + 1] == '{"image": 1}'
 
 
+def test_build_vllm_command_lighton_ocr_3():
+    from pdf_ocr.config import load_config
+
+    cmd = build_vllm_command(load_config("lighton_ocr_3_0_8b"), port=8000, host="0.0.0.0")
+
+    assert cmd[:3] == ["vllm", "serve", "lightonai/LightOnOCR-3-0.8B"]
+    idx = cmd.index("--default-chat-template-kwargs")
+    assert cmd[idx + 1] == '{"enable_thinking": false}'
+    idx = cmd.index("--max-model-len")
+    assert cmd[idx + 1] == "18000"
+
+
 def test_build_vllm_command_chunked_prefill():
     config = ModelConfig(
         model_id="test/model",

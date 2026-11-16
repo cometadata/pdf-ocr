@@ -13,7 +13,7 @@ def test_parser_defaults():
     parser = build_parser()
     args = parser.parse_args(["test.pdf"])
     assert args.source == "test.pdf"
-    assert args.model == "lighton_ocr_2_1b"
+    assert args.model == "lighton_ocr_3_0_8b"
     assert args.output is None
     assert args.hf_repo is None
     assert args.private is False

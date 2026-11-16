@@ -1,0 +1,29 @@
+model_id: lightonai/LightOnOCR-3-0.8B
+served_model_name: lighton-ocr-3
+
+vllm_args:
+  limit-mm-per-prompt: '{"image": 1}'
+  default-chat-template-kwargs: '{"enable_thinking": false}'
+  no-enable-prefix-caching: true
+  mm-processor-cache-gb: 0
+  max-model-len: 18000
+  gpu-memory-utilization: 0.90
+  trust-remote-code: true
+
+inference:
+  max_tokens: 4096
+  temperature: 0.2
+  top_p: 0.9
+  batch_size: 64
+  max_concurrency: 64
+  request_timeout: 600
+  max_retries: 3
+  retry_backoff: 2.0
+  offline_batch_size: 256
+  render_workers: 8
+  max_retry_depth: 3
+  flush_every: 10
+
+pdf_rendering:
+  dpi: 400
+  max_dimension: 2048

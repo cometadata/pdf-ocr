@@ -19,6 +19,24 @@ def test_load_bundled_config_by_model_id():
     assert config.model_id == "lightonai/LightOnOCR-2-1B"
 
 
+def test_load_lighton_ocr_3_config_by_name():
+    config = load_config("lighton_ocr_3_0_8b")
+    assert config.model_id == "lightonai/LightOnOCR-3-0.8B"
+    assert config.served_model_name == "lighton-ocr-3"
+    assert config.vllm_args["default-chat-template-kwargs"] == '{"enable_thinking": false}'
+    assert config.vllm_args["max-model-len"] == 18000
+    assert config.inference.max_tokens == 4096
+    assert config.inference.temperature == 0.2
+    assert config.inference.top_p == 0.9
+    assert config.pdf_rendering.dpi == 400
+    assert config.pdf_rendering.max_dimension == 2048
+
+
+def test_load_lighton_ocr_3_config_by_model_id():
+    config = load_config("lightonai/LightOnOCR-3-0.8B")
+    assert config.model_id == "lightonai/LightOnOCR-3-0.8B"
+
+
 def test_load_config_from_yaml_path(tmp_path):
     yaml_content = """
 model_id: custom/MyModel

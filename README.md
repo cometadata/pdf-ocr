@@ -47,7 +47,7 @@ results = convert("./pdfs/", base_url="http://localhost:8000", output="./output/
 | Flag | Description |
 |---|---|
 | `source` | PDF file, directory, or HF dataset reference |
-| `--model` | Model config name, HF model ID, or YAML config path (default: `lighton_ocr_2_1b`) |
+| `--model` | Model config name, HF model ID, or YAML config path (default: `lighton_ocr_3_0_8b`) |
 | `--output`, `-o` | Local output directory |
 | `--hf-repo` | HF repo ID to push results to |
 | `--private` | Create private HF dataset (with `--hf-repo`) |
@@ -68,7 +68,18 @@ results = convert("./pdfs/", base_url="http://localhost:8000", output="./output/
 
 ## Model Configuration
 
-Models are configured via YAML files in `models/`. The bundled config (`lighton_ocr_2_1b`) uses [LightOnOCR-2-1B](https://huggingface.co/lightonai/LightOnOCR-2-1B). To use a different model, create a YAML config and pass it by path:
+Models are configured via YAML files in `models/`. Two configs are bundled:
+
+| Config | Model | Rendering | Notes |
+|---|---|---|---|
+| `lighton_ocr_3_0_8b` (default) | [LightOnOCR-3-0.8B](https://huggingface.co/lightonai/LightOnOCR-3-0.8B) | 400 DPI, longest edge 2048 px | Qwen3.5 architecture; served with thinking disabled (`--default-chat-template-kwargs '{"enable_thinking": false}'`) |
+| `lighton_ocr_2_1b` | [LightOnOCR-2-1B](https://huggingface.co/lightonai/LightOnOCR-2-1B) | 200 DPI, longest edge 1540 px | `--model lighton_ocr_2_1b` |
+
+Both models take the page image alone (no text prompt) and return the page as Markdown. The LightOnOCR-3 settings follow its [model card](https://huggingface.co/lightonai/LightOnOCR-3-0.8B) (temperature 0.2, top-p 0.9, 4096 max tokens) and the `vllm serve` flags in the [LightOnOCR repository](https://github.com/lightonai/LightOnOCR).
+
+**vLLM version:** use vLLM 0.30.0 (Docker image `vllm/vllm-openai:v0.30.0`); LightOnOCR reports that vLLM 0.27.1 makes the models loop. The `offline` extra pins `vllm==0.30.0` with `transformers==5.16.1`, the combination LightOnOCR tests: transformers 5.17 (the version in the v0.30.0 Docker image) breaks LightOnOCR-2-1B on vLLM 0.30.0, so install `transformers==5.16.1` in that image to run `lighton_ocr_2_1b`.
+
+To use a different model, create a YAML config and pass it by path:
 
 ```yaml
 # my_model.yaml — only model_id is required; everything else has defaults
@@ -130,7 +141,8 @@ pdf_ocr/
 ├── server.py            # vLLM server lifecycle and async OpenAI-compatible client
 ├── storage.py           # Output to local files or HF Hub, checkpointing
 ├── models/
-│   └── lighton_ocr_2_1b.yaml
+│   ├── lighton_ocr_2_1b.yaml
+│   └── lighton_ocr_3_0_8b.yaml
 └── hf_jobs/
     └── hf_job_runner.py # Entry point for HuggingFace Jobs execution
 ```
