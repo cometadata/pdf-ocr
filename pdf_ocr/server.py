@@ -130,6 +130,7 @@ class VLLMClient:
         self.retry_backoff = max(0.0, config.inference.retry_backoff)
         self.max_concurrency = config.inference.max_concurrency
         self._client = AsyncOpenAI(api_key="vllm", base_url=f"{self.base_url}/v1")
+        self._loop = asyncio.new_event_loop()
 
     def _prepare_payload(self, image: "Image.Image") -> Dict[str, Any]:
         payload: Dict[str, Any] = {
@@ -198,27 +199,18 @@ class VLLMClient:
     def infer_batch(self, images: Sequence["Image.Image"]) -> List[str]:
         if not images:
             return []
-        payloads = [self._prepare_payload(img) for img in images]
-        return self._run_async(self._async_infer_batch(payloads))
+        return self._run_async(self._async_infer_batch(images))
 
-    async def _async_infer_batch(self, payloads: Sequence[Dict[str, Any]]) -> List[str]:
+    async def _async_infer_batch(self, images: Sequence["Image.Image"]) -> List[str]:
         semaphore = asyncio.Semaphore(self.max_concurrency)
 
-        async def _throttled(p: Dict[str, Any]) -> str:
+        async def _throttled(image: "Image.Image") -> str:
             async with semaphore:
-                return await self._async_completion(p)
+                payload = await asyncio.to_thread(self._prepare_payload, image)
+                return await self._async_completion(payload)
 
-        tasks = [asyncio.create_task(_throttled(p)) for p in payloads]
+        tasks = [asyncio.create_task(_throttled(img)) for img in images]
         return await asyncio.gather(*tasks)
 
-    @staticmethod
-    def _run_async(coro: Awaitable[Any]) -> Any:
-        loop = asyncio.new_event_loop()
-        try:
-            asyncio.set_event_loop(loop)
-            result = loop.run_until_complete(coro)
-            loop.run_until_complete(loop.shutdown_asyncgens())
-            return result
-        finally:
-            asyncio.set_event_loop(None)
-            loop.close()
+    def _run_async(self, coro: Awaitable[Any]) -> Any:
+        return self._loop.run_until_complete(coro)

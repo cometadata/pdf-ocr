@@ -330,13 +330,36 @@ def test_async_infer_batch_limits_concurrency():
 
     client._async_completion = mock_completion
 
-    payloads = [{"model": "test", "messages": [], "max_tokens": 100, "temperature": 0.2}] * 5
+    from PIL import Image
+    images = [Image.new("RGB", (8, 8))] * 5
 
     loop = asyncio.new_event_loop()
     try:
-        results = loop.run_until_complete(client._async_infer_batch(payloads))
+        results = loop.run_until_complete(client._async_infer_batch(images))
     finally:
         loop.close()
 
     assert results == ["ok"] * 5
     assert max_in_flight <= 2
+
+
+def test_infer_batch_reuses_one_event_loop_across_batches():
+    from PIL import Image
+
+    config = ModelConfig(model_id="test/model", served_model_name="test")
+    client = VLLMClient(base_url="http://localhost:8000", config=config)
+
+    loops = []
+
+    async def mock_completion(payload):
+        loops.append(asyncio.get_running_loop())
+        assert payload["messages"][0]["content"][0]["image_url"]["url"].startswith("data:image/png;base64,")
+        return "ok"
+
+    client._async_completion = mock_completion
+
+    image = Image.new("RGB", (8, 8))
+    assert client.infer_batch([image, image]) == ["ok", "ok"]
+    assert client.infer_batch([image]) == ["ok"]
+    assert len(set(map(id, loops))) == 1
+    assert not loops[0].is_closed()
