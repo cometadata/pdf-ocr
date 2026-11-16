@@ -93,13 +93,15 @@ class TestBuildEngineKwargs:
         assert "port" not in kwargs
         assert kwargs["trust_remote_code"] is True
 
-    def test_default_chat_template_kwargs_filtered(self):
+    def test_server_frontend_args_filtered(self):
         config = self._make_config({
             "default-chat-template-kwargs": '{"enable_thinking": false}',
+            "api-server-count": 4,
             "max-model-len": 18000,
         })
         kwargs = build_engine_kwargs(config)
         assert "default_chat_template_kwargs" not in kwargs
+        assert "api_server_count" not in kwargs
         assert kwargs["max_model_len"] == 18000
 
     def test_negation_prefix(self):

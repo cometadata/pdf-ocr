@@ -26,6 +26,7 @@ _SERVER_ONLY_ARGS = frozenset({
     "response-role",
     "chat-template",
     "default-chat-template-kwargs",
+    "api-server-count",
 })
 
 _NEGATION_FLAGS = frozenset({
